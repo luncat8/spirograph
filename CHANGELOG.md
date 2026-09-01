@@ -1,5 +1,28 @@
 # CHANGELOG
 
+## 0.5.0
+- gear-tree level sliders (lvl 1..N) in the panel: every parent at a depth
+  gets exactly N children placed at i*360/N degrees; new siblings deep-clone
+  the first child (add-sub-gear defaults when there is none); kept children
+  are re-spaced so the level stays radially uniform even after rot drift.
+  lvl k+1 appears once level k has sub-gears; `reset levels` collapses the
+  tree to a single chain.
+- symmetry mode (panel checkbox): context-menu edits mirror to every gear at
+  the same level (r, speed, internal, pencil d/width/colors, anim speed,
+  trail length); with it on, `add sub-gear` grows the whole level. whole-mode
+  edits run one tree-global recompute per edit instead of one per sibling.
+- per-pencil `trail length` slider in the context menu (500..40000 points,
+  default 20000): soft cap on the stored animate-mode trail. Lowering it
+  evicts the oldest points; whole-mode bakes are never trimmed to it.
+- `period threshold` slider in the panel (50..2000 turns, default 2000):
+  when the detected period exceeds it, the whole-mode bake is skipped with a
+  toast (the existing trace stays) instead of drawing a seam-capped figure.
+  `detectPeriod` now returns the uncapped LCM (`turnsRaw`).
+- scene files now carry `rot` (orbit angle) per gear, so a radially-spaced
+  tree saved and reloaded keeps its layout (legacy files default to 0), plus
+  the new `trailCap`. `detectPeriod` also walks every root (it silently
+  ignored all roots after the first).
+
 ## 0.4.0
 - pan/zoom stays 60+ FPS in both modes with a visible trail: pointer/wheel
   gestures draw the ring directly at the live view transform (no per-frame FBO

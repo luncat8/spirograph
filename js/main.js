@@ -22,6 +22,8 @@
 		needsRender: false,
 		mode: 'animate',
 		colorMode: 'frequency',
+		symmetry: false,
+		periodThreshold: 2000,
 		showCircles: true,
 		showDial: false,
 		showPoints: false,
@@ -106,6 +108,51 @@
 		for (var i = 0; i < gear.children.length; i++) clearSubtree(gear.children[i]);
 	}
 
+	// ---- gear-tree helpers for level sliders + symmetry mode ----
+	// user-input time only (never per-frame), so the closure walk is fine.
+	function walkTree(roots, fn) {
+		for (var i = 0; i < roots.length; i++) {
+			(function walk(g, d) {
+				fn(g, d);
+				for (var k = 0; k < g.children.length; k++) walk(g.children[k], d + 1);
+			})(roots[i], 0);
+		}
+	}
+
+	// deepest level that has any gears (0 = no sub-gears).
+	App.maxDepth = function (roots) {
+		var max = 0;
+		walkTree(roots, function (g, d) {
+			if (g.children.length > 0 && d + 1 > max) max = d + 1;
+		});
+		return max;
+	};
+
+	App.depthOf = function (roots, gear) {
+		var found = -1;
+		walkTree(roots, function (g, d) {
+			if (found < 0 && g === gear) found = d;
+		});
+		return found;
+	};
+
+	App.siblingsAtDepth = function (roots, depth) {
+		var out = [];
+		walkTree(roots, function (g, d) {
+			if (d === depth) out.push(g);
+		});
+		return out;
+	};
+
+	// slider value for level L: child count of the first parent at depth L-1
+	// that has any children, else 1.
+	App.levelCount = function (level) {
+		var parents = App.siblingsAtDepth(App.roots, level - 1);
+		for (var i = 0; i < parents.length; i++)
+			if (parents[i].children.length > 0) return parents[i].children.length;
+		return 1;
+	};
+
 	// ---- App API used by GUI ----
 	App.onGearGeom = function (gear) { clearSubtree(gear); markDirty(); if (App.overlay.on) App.invalidateOverlay(); };
 	App.markDirty = function () { markDirty(); };
@@ -171,6 +218,11 @@
 		snapAllSpeeds();
 		var period = Gear.detectPeriod(App.roots);
 		App.currentPeriod = period;
+		if (period.turnsRaw > App.periodThreshold) {
+			toast('period ' + period.turnsRaw + ' > threshold ' + App.periodThreshold + ' (bake skipped)');
+			GUI.setPeriod(period.turnsRaw, period.capped);
+			return;
+		}
 		var sampleCount = Math.max(2, Math.min(Math.round(period.turns * 200), Gear.CAP));
 		Gear.computeWhole(App.roots, period, sampleCount);
 		if (App.overlay.on) App.invalidateOverlay();
@@ -178,7 +230,18 @@
 		GUI.setPeriod(period.turns, period.capped);
 	};
 
+	App.setPeriodThreshold = function (v) {
+		App.periodThreshold = v;
+		if (App.mode === 'whole') App.recomputeWhole();
+	};
+
 	App.onGearParam = function (gear, kind) {
+		if (kind === 'trail') {
+			// ring may have been trimmed: a bake that keeps evicted pixels is wrong
+			if (App.mode === 'animate' && App.overlay.on) App.invalidateOverlay();
+			else markDirty();
+			return;
+		}
 		if (App.mode === 'whole') {
 			if (kind === 'width') { if (App.overlay.on) App.invalidateOverlay(); else markDirty(); }
 			else if (kind === 'color') {
@@ -249,25 +312,127 @@
 		applyColorMode();
 		GUI.closeMenu();
 		afterSceneChange();
+		GUI.rebuildLevels();
 	};
 
-	App.addSubGear = function (parent) {
-		var child = Gear.makeGear({
-			r: Math.max(0.05, parent.r * 0.45),
-			speed: 0.3,
-			internal: true,
-			pencil: { d: parent.r * 0.2, width: 2, c1: { on: true, color: '#ffffff' }, c2: { on: false, color: '#ff8a3d' } }
-		});
+	// create one sub-gear of `parent`: deep-clone of `template` (the first
+	// sibling) or the classic add-sub-gear defaults, placed at orbit angle rot.
+	function makeChildFromTemplate(parent, template, rot) {
+		var opts;
+		if (template) {
+			opts = {
+				r: template.r,
+				speed: template.speed,
+				internal: template.internal,
+				trailCap: template.trailCap,
+				pencil: {
+					d: template.pencil.d,
+					width: template.pencil.width,
+					c1: { on: template.pencil.c1.on, color: template.pencil.c1.color },
+					c2: { on: template.pencil.c2.on, color: template.pencil.c2.color },
+					animSpeed: template.pencil.animSpeed,
+					animMode: template.pencil.animMode
+				}
+			};
+		} else {
+			opts = {
+				r: Math.max(0.05, parent.r * 0.45),
+				speed: 0.3,
+				internal: true,
+				pencil: { d: parent.r * 0.2, width: 2, c1: { on: true, color: '#ffffff' }, c2: { on: false, color: '#ff8a3d' } }
+			};
+		}
+		var child = Gear.makeGear(opts);
 		// new sub-gear inherits the global color mode
 		child.pencil.animMode = App.colorMode;
 		parent.children.push(child);
 		Gear.initRuntime(child, parent);
+		child.rot = rot;
 		Gear.update(child, parent, parent.cx, parent.cy, parent.phase != null ? parent.phase : parent.rot, 0, App.globalSpeed);
+		return child;
+	}
+
+	App.addSubGear = function (parent) {
+		var child = makeChildFromTemplate(parent, null, 0);
 		rebuildAll();
 		afterSceneChange();
+		GUI.rebuildLevels();
 		var sc = w2s(child.cx, child.cy);
-		GUI.openMenu(child, (sc.x / App.dpr) + App.canvas.getBoundingClientRect().left,
+		GUI.openMenu(child,
+			(sc.x / App.dpr) + App.canvas.getBoundingClientRect().left,
 			(sc.y / App.dpr) + App.canvas.getBoundingClientRect().top);
+	};
+
+	// set every parent at depth `level-1` to exactly n children, evenly spaced
+	// at i*360/n degrees. kept children are re-spaced too: rot drifts every
+	// frame, so only re-spacing keeps the level radially uniform (and makes
+	// N -> M -> N round-trip). re-spaced subtrees restart their traces.
+	App.applyLevel = function (level, n) {
+		n = Math.max(1, Math.min(12, n | 0));
+		var parents = App.siblingsAtDepth(App.roots, level - 1);
+		if (parents.length === 0) return;
+		var changed = false;
+		for (var i = 0; i < parents.length; i++) {
+			var parent = parents[i];
+			var old = parent.children.length;
+			if (old === n) continue;
+			changed = true;
+			if (n < old) parent.children.length = n;
+			else {
+				var template = parent.children[0] || null;
+				for (var c = old; c < n; c++)
+					makeChildFromTemplate(parent, template, (c * 2 * Math.PI) / n);
+			}
+			for (var k = 0; k < parent.children.length; k++) {
+				var ch = parent.children[k];
+				var want = (k * 2 * Math.PI) / n;
+				if (ch.rot !== want) { ch.rot = want; clearSubtree(ch); }
+			}
+		}
+		if (!changed) return;
+		rebuildAll();
+		var mg = GUI.menuGear && GUI.menuGear();
+		if (mg && App.depthOf(App.roots, mg) < 0) GUI.closeMenu();
+		afterSceneChange();
+		GUI.rebuildLevels();
+	};
+
+	// symmetry mode: mirror the edited gear's fields to every gear at the same
+	// depth. the caller's single onGearParam(gear, kind) then repaints /
+	// re-bakes everything — whole-mode recompute/recolor are tree-global, so
+	// one call covers the siblings as well.
+	App.applySymmetry = function (gear, kind) {
+		if (!App.symmetry) return;
+		var depth = App.depthOf(App.roots, gear);
+		if (depth < 0) return;
+		var sibs = App.siblingsAtDepth(App.roots, depth);
+		for (var i = 0; i < sibs.length; i++) {
+			var s = sibs[i];
+			if (s === gear) continue;
+			if (kind === 'geom') {
+				s.r = gear.r; s.speed = gear.speed; s.internal = gear.internal; s.pencil.d = gear.pencil.d;
+				if (App.mode !== 'whole') clearSubtree(s);
+			} else if (kind === 'width') {
+				s.pencil.width = gear.pencil.width;
+			} else if (kind === 'color') {
+				s.pencil.c1 = { on: gear.pencil.c1.on, color: gear.pencil.c1.color, _rgb: null, _hex: null };
+				s.pencil.c2 = { on: gear.pencil.c2.on, color: gear.pencil.c2.color, _rgb: null, _hex: null };
+				s.pencil.animSpeed = gear.pencil.animSpeed;
+			} else if (kind === 'trail') {
+				App.setTrailCap(s, gear.trailCap);
+			}
+		}
+	};
+
+	// soft cap on stored trail points (animate mode). lowering it below the
+	// current count evicts the oldest points; whole mode never trims — the
+	// baked closed figure must stay complete.
+	App.setTrailCap = function (gear, v) {
+		gear.trailCap = Math.max(1, Math.min(v, Gear.CAP));
+		if (App.mode === 'animate' && gear.count > gear.trailCap) {
+			gear.head = (gear.head + gear.count - gear.trailCap) % Gear.CAP;
+			gear.count = gear.trailCap;
+		}
 	};
 
 	App.removeGear = function (gear) {
@@ -278,6 +443,7 @@
 		rebuildAll();
 		GUI.closeMenu();
 		afterSceneChange();
+		GUI.rebuildLevels();
 	};
 
 	App.copyScene = function () {
@@ -385,6 +551,7 @@
 		GUI.setColorMode(App.colorMode);
 		recomputeTransform();
 		afterSceneChange();
+		GUI.rebuildLevels();
 	}
 
 	function fallbackCopy(text) {

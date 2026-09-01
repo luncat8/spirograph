@@ -128,6 +128,53 @@
   colors, join/end-cap gating, ring wraps (head=CAP-2), partial/single/empty
   ranges, decimation merging; gear.js roundtrip + recolorWhole==computeWhole.
 
+## done (0.5.0) — plan 04-plan-level-sliders-symmetry.md implemented
+- plan review pass first: 6 defects found and fixed in the plan itself (see
+  the "amendments" section of 04-plan + 05-plan for the 3D follow-ups):
+  applyLevel must re-space kept children (rot drifts every frame — measured
+  1.52 rad after 3.7 s); rot must be serialized or the radial layout is lost
+  on reload; applySymmetry 'geom' missed pencil.d (pencil-d slider dispatches
+  kind 'geom') and N redundant whole-mode bakes per slider tick; the
+  trailCap check in pushPoint would truncate whole bakes into open arcs and
+  lowering the cap never shrank count (measured 3000 points kept at cap 500);
+  rebuilding the level sliders inside applyLevel kills the active drag
+  (detaching an active range input releases pointer capture); detectPeriod
+  ignored every root after the first (1/2 + 1/3 gave turns 2, not 6).
+- js/gear.js: makeGear reads opts.rot + opts.trailCap (clamped 1..CAP);
+  initRuntime zeroes rot only when null; pushPoint(gear, x, y, col, limit)
+  — whole mode (computeWhole) passes CAP so a closed figure is never trimmed
+  to the animate trail length; detectPeriod walks ALL roots and returns
+  turnsRaw (uncapped LCM); serializeGear carries rot + trailCap.
+- js/main.js: walkTree + App.maxDepth/depthOf/siblingsAtDepth/levelCount;
+  makeChildFromTemplate (deep-clone of first child incl trailCap, else the
+  classic add-sub-gear defaults); addSubGear refactored onto it (behavior
+  identical); App.applyLevel (grow clones template, shrink truncates, kept
+  children re-spaced to i*2pi/N with clearSubtree, n clamped 1..12, closes an
+  orphaned context menu, rebuilds level sliders); App.applySymmetry (field
+  mirror only — the single onGearParam call covers whole-mode repaints);
+  App.setTrailCap (clamps + drops oldest points in animate mode only);
+  App.setPeriodThreshold + recomputeWhole threshold skip (toast + raw period
+  readout, existing trace kept); onGearParam 'trail' kind (overlay rebake in
+  animate so trimmed pixels disappear, markDirty otherwise);
+  GUI.rebuildLevels wired into resetScene/addSubGear/removeGear/loadObject.
+- js/gui.js: panel 'tree' section (symmetry checkbox, persistent lvl-slider
+  rows updated IN PLACE — never rebuilt under the pointer, lvl-indent class,
+  reset-levels button) + 'whole mode' section (period threshold slider);
+  context menu gains the trail-length row and applySymmetry before every
+  onGearParam (11 handlers); add-sub-gear routes through applyLevel when
+  symmetry is on; GUI.menuGear/rebuildLevels exported.
+- index.html: .lvl-indent CSS. js/render.js untouched (hot path untouched).
+- validated: node --check on all js; node harness boots the REAL app on
+  DOM stubs (71 assertions, 0 failures): level grow/clone/re-space after
+  rot drift, shrink round-trip, level 2, symmetry mirrors per depth (fresh
+  slot objects), trail trim on lower + never in whole mode, whole bake not
+  truncated by trailCap, threshold boundary (== bakes, < skips + toast +
+  raw readout + trace kept), exactly ONE recomputeWhole per symmetric whole
+  edit, add-sub-gear sym on/off, orphaned menu close, in-place slider
+  updates across applyLevel/removeGear, autosave roundtrip (rot + trailCap),
+  reset levels, resetScene, default.js boot, legacy scene defaults.
+
 ## next
+- 05-plan-3D.md (reviewed, amendments at the end of the file).
 - optional: chunked post-gesture overlay rebake if the release hitch ever
   measures perceptible; world-space FBO for >zoom-1 quality bounds.

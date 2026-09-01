@@ -536,3 +536,88 @@ Append a "done (0.5.0)" heading:
   whole-tree walk; the sidebar global is enough).
 - Trail length as a percent or in seconds (points are the
   natural unit and match the existing ring buffer).
+
+## amendments (review pass, pre-implementation)
+
+Verified against the code at 2bdcec3 with node probes. Six
+defects fixed, plus smaller items; everything else stays as
+decided above.
+
+1. **applyLevel re-spaces kept children.** The draft assigns
+   `rot = i*2π/N` only to NEW children, but `rot` drifts every
+   frame (`update` advances it; a whole bake leaves
+   `rot = speed·phi`), so a plain 1→3 grow puts the kept child
+   off-grid (measured: child.rot = 1.52 after 3.7 s) and the
+   level is visibly uneven. Grow AND shrink now set
+   `children[i].rot = i*2π/N` for every kept child and
+   `clearSubtree` any child whose rot actually moved (whole mode
+   re-bakes anyway). The slider becomes deterministic: same N ⇒
+   same layout, and N→M→N round-trips. `applyLevel` also clamps
+   n to 1..12 (the slider bounds) so the sym-ON add-button
+   cannot push a level past what the slider can display.
+2. **`rot` is serialized.** `serializeGear` never carried `rot`,
+   so a saved radial layout reloaded with every child at rot 0 —
+   all siblings overlapping. `makeGear` reads `opts.rot`,
+   `initRuntime` zeroes it only when null, `serializeGear` writes
+   it. Legacy files (no rot) behave exactly as today.
+3. **applySymmetry mirrors fields only; ONE onGearParam.** The
+   plan called `onGearParam(s, kind)` per sibling, but in whole
+   mode each of those runs the same tree-global
+   `recomputeWhole`/`recolorWhole` — N redundant full bakes per
+   slider input event. The single existing
+   `onGearParam(gear, kind)` call already repaints the whole
+   tree. Corrections while here: `'geom'` also copies
+   `pencil.d` (the pencil-d slider dispatches kind `'geom'`;
+   the plan's field list missed it — it would not have
+   mirrored); `'geom'` clears with `clearSubtree` (matching
+   `onGearGeom`, gears may have children), not `clearTrace`;
+   `'color'` clears nothing (the single-gear animate path does
+   not clear on color edits — stay consistent).
+4. **Whole mode bypasses the trail soft cap; lowering the cap
+   trims the ring.** Two related bugs:
+   (a) task 9's `count >= trailCap` check would truncate any
+   whole bake with sampleCount+1 > trailCap down to the newest
+   points — an open arc instead of a closed figure (the plan's
+   "sampleCount <= CAP-1" reasoning compares against the wrong
+   cap). `pushPoint(gear, x, y, col, limit)` gains an optional
+   limit; `computeWhole` passes `Gear.CAP`, animate defaults to
+   `gear.trailCap`.
+   (b) verified: lowering trailCap NEVER shrinks `count` (the
+   eviction branch holds count at the cap only while it is
+   already there — count 3000 with cap 500 stays 3000), so the
+   plan's validation case "trace shrinks to ~1k points" fails.
+   New `App.setTrailCap(gear, v)` clamps the value 1..CAP and,
+   in animate mode only, drops the oldest
+   `(count - trailCap)` points. Symmetry `'trail'` mirrors via
+   `App.setTrailCap` so siblings trim too.
+   `onGearParam('trail')` invalidates the overlay in animate
+   mode (a bake that keeps evicted pixels is wrong) and plain
+   `markDirty` otherwise.
+5. **rebuildLevels updates rows in place.** Task 4 step 4
+   rebuilds the level sliders inside applyLevel — i.e. while the
+   dragged slider's own input event is firing. Detaching an
+   active range input releases pointer capture and kills the
+   drag, so a 1→5 drag would stall at 2. Rows are now persistent
+   (`levelRows[]`): trailing rows are appended/removed, values
+   are written into the existing inputs. `App.levelCount(L)`
+   (main.js, beside the other tree helpers) supplies the value:
+   first parent at depth L-1 with children, else 1.
+   `levelsHost` gets a `levels` class for that walk.
+6. **Template clones carry `trailCap`** (deep-clone means
+   trailCap too). Task 2's unconditional
+   `child.trailCap = 20000` line is dropped — makeGear's
+   default (clamped 1..CAP) already covers the no-template path.
+
+Smaller items: `add sub-gear` with sym ON always routes through
+`applyLevel(depth+1, count+1)` (the plan's `children.length > 0`
+guard made the 0-children case grow only the clicked gear —
+against the draft's "add or remove from whole level");
+`detectPeriod` walks ALL roots (verified it silently ignored
+every root after the first — 1/2 + 1/3 gave turns 2 instead of
+6; matters once level sliders make big trees cheap, and plan 05
+already assumes per-root terms); applyLevel closes the context
+menu if its gear was truncated away (orphaned menus edited
+detached gears — new `GUI.menuGear()`); the threshold-skip
+readout shows `turnsRaw` (showing the 2000-capped value next to
+a toast about the raw number reads as a contradiction); README
+is updated too (the plan forgot it).

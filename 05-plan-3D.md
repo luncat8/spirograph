@@ -476,3 +476,50 @@ All new fields optional on load (defaults: 2d / 0 / default camera).
 - Per-gear spin as a follow-up.
 - Chunked post-gesture overlay rebake (carried over from 03-plan).
 - 3D export (OBJ) of the whole-mode ring.
+
+## amendments (review pass)
+
+Reviewed against the code at 2bdcec3 (after plan 04). The math
+checks out (the closure counterexample is correct: root.speed 1/2
+with k 1/2 needs u divisible by 4 — den(k) alone gives u=2 and a
+seam), and the JS-projection insight is the right call. Five
+corrections for implementation time:
+
+1. **Version**: 04 ships as 0.5.0, so this lands as 0.6.0 (the
+   plan text says 0.5.0 in section F).
+2. **pushPoint signature**: after 04, `pushPoint` is
+   `pushPoint(gear, x, y, col, limit)` (limit = whole-mode hard
+   cap so a closed figure is never trimmed to the animate trail
+   length; animate defaults to `gear.trailCap`). The phaseRing
+   write slots in as
+   `pushPoint(gear, x, y, col, phase, limit)` — computeWhole
+   passes (…, col, rootRot, Gear.CAP), animate passes
+   (…, col, gear._rrot) with the limit defaulting to trailCap.
+   As written the plan inserts phase BEFORE col, which would
+   silently pass CAP as the phase at the computeWhole call site.
+3. **drawGearSegments reads the App transform as globals** —
+   `App.S`, `App.view.pan`, `App.cx0/cy0` are hoisted inside the
+   function, not parameters. The scratch-gear trick therefore
+   needs the identity transform installed around the 3D draw:
+   save, set `App.S = 1`, `App.view.pan = ZERO_PAN`
+   (preallocated), `App.cx0 = App.cy0 = 0`, draw, restore — six
+   writes, allocation-free. Same for
+   `drawGearSegmentsDecimated`.
+4. **detectPeriod after 04** walks ALL roots (it used to ignore
+   every root after the first) and returns `turnsRaw`; the
+   spinK product term stacks on that per root, as the edge-case
+   section already assumes.
+5. **Depth + AA blending**: translucent AA edges write depth
+   like opaque cores, so a nearer segment's quad edge can punch
+   a ~1px halo into a farther segment; `discard` at a <= 0
+   trims the worst of it. Acceptable v1 — worth a note in
+   findings-pitfalls-skills.md when implemented. Also
+   `getContext('webgl2', …)` already defaults `depth: true` for
+   the default framebuffer, so only the overlay FBO needs the
+   new DEPTH_COMPONENT24 renderbuffer.
+6. Filename: "Files touched" lists `04-plan-3D.md`; this file is
+   `05-plan-3D.md`.
+7. Memory note: phaseRing is +160 KB per pencil; a 12×12
+   level-slider tree (156 pencils) adds ~24 MB on top of the
+   ~125 MB of stride-5 rings — the same "extreme trees are
+   opt-in" caveat as 04 applies.

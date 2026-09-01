@@ -16,6 +16,12 @@
 	// reference into the open per-gear menu so refreshAnimMode() can relabel the
 	// anim-speed slider prefix after the global color mode changes.
 	var speedLabRefresh = null;
+	// level-slider host + persistent rows: values are written into the live
+	// inputs (rebuilding them mid-drag would detach an active range input and
+	// kill the drag).
+	var levelsHost = null;
+	var levelRows = [];
+	var resetLevelsBtn = null;
 
 	function el(tag, cls, txt) {
 		var e = document.createElement(tag);
@@ -156,6 +162,35 @@
 		panel.appendChild(el('div', 'help',
 			'Uncheck "draw trail" to hide the traced curve (points-only view).'));
 
+		// gear tree: level sliders grow every parent at a depth by the same
+		// child count, radially spaced; symmetry mirrors menu edits per level.
+		panel.appendChild(el('div', 'sub', 'tree'));
+		panel.appendChild(checkboxRow('symmetry mode', app.symmetry, function (v) {
+			app.symmetry = v;
+		}));
+		panel.appendChild(el('div', 'help',
+			'When ON, menu edits apply to every sibling at the same level. Add-sub-gear grows the whole level.'));
+		levelsHost = el('div', 'levels');
+		levelRows.length = 0;
+		panel.appendChild(levelsHost);
+		var treeBtns = el('div', 'btns');
+		resetLevelsBtn = buttonRow('reset levels', function () {
+			var maxD = app.maxDepth(app.roots);
+			for (var l = 1; l <= maxD; l++) app.applyLevel(l, 1);
+		});
+		resetLevelsBtn.style.display = 'none';
+		treeBtns.appendChild(resetLevelsBtn);
+		panel.appendChild(treeBtns);
+		panel.appendChild(el('div', 'help',
+			'lvl k = uniform child count for every parent at that depth. Positions are i * 360/N degrees.'));
+
+		panel.appendChild(el('div', 'sub', 'whole mode'));
+		panel.appendChild(sliderRow('period threshold', 50, 2000, 50, app.periodThreshold, function (v) {
+			app.setPeriodThreshold(v);
+		}));
+		panel.appendChild(el('div', 'help',
+			'Skip the bake when the period exceeds this many turns.'));
+
 		var sval = el('div', 'sub', 'scene');
 		panel.appendChild(sval);
 		var sbtns = el('div', 'btns');
@@ -174,6 +209,29 @@
 
 		GUI.setMode(app.mode);
 		GUI.setColorMode(app.colorMode || 'frequency');
+		rebuildLevels();
+	}
+
+	function makeLevelRow(L) {
+		var wrap = sliderRow('lvl ' + L, 1, 12, 1, 1, function (v) {
+			app.applyLevel(L, v);
+		});
+		if (L > 1) wrap.classList.add('lvl-indent');
+		levelsHost.appendChild(wrap);
+		return { wrap: wrap, input: wrap.querySelector('input'), val: wrap.querySelector('.val') };
+	}
+
+	function rebuildLevels() {
+		if (!levelsHost) return;
+		var need = Math.max(1, app.maxDepth(app.roots) + 1);
+		while (levelRows.length > need) levelsHost.removeChild(levelRows.pop().wrap);
+		while (levelRows.length < need) levelRows.push(makeLevelRow(levelRows.length + 1));
+		for (var i = 0; i < levelRows.length; i++) {
+			var n = app.levelCount(i + 1);
+			levelRows[i].input.value = n;
+			levelRows[i].val.textContent = n;
+		}
+		resetLevelsBtn.style.display = need > 1 ? '' : 'none';
 	}
 
 	function setPaused(p) {
@@ -222,35 +280,35 @@
 		menu.appendChild(title);
 
 		menu.appendChild(checkboxRow('internal (roll inside parent)', gear.internal, function (v) {
-			gear.internal = v; app.onGearParam(gear, 'geom');
+			gear.internal = v; app.applySymmetry(gear, 'geom'); app.onGearParam(gear, 'geom');
 		}));
 
 		menu.appendChild(sliderRow('diameter', 0.04, 2.0, 0.01, gear.r * 2, function (v) {
-			gear.r = v / 2; app.onGearParam(gear, 'geom');
+			gear.r = v / 2; app.applySymmetry(gear, 'geom'); app.onGearParam(gear, 'geom');
 		}));
 
 		menu.appendChild(sliderRow('speed', -1, 1, 0.01, gear.speed, function (v) {
-			gear.speed = v; app.onGearParam(gear, 'geom');
+			gear.speed = v; app.applySymmetry(gear, 'geom'); app.onGearParam(gear, 'geom');
 		}, function (v) { return app.mode === 'whole' ? app.snapNice(v) : v; }));
 
 		menu.appendChild(sliderRow('pencil d', 0, 1, 0.01, gear.pencil.d, function (v) {
-			gear.pencil.d = v; app.onGearParam(gear, 'geom');
+			gear.pencil.d = v; app.applySymmetry(gear, 'geom'); app.onGearParam(gear, 'geom');
 		}));
 
 		menu.appendChild(sliderRow('pencil width', 0.5, 12, 0.5, gear.pencil.width, function (v) {
-			gear.pencil.width = v; app.onGearParam(gear, 'width');
+			gear.pencil.width = v; app.applySymmetry(gear, 'width'); app.onGearParam(gear, 'width');
 		}));
 
 		menu.appendChild(colorCheckRow('color 1', gear.pencil.c1.on, gear.pencil.c1.color,
-			function (v) { gear.pencil.c1.on = v; app.onGearParam(gear, 'color'); },
-			function (v) { gear.pencil.c1.color = v; app.onGearParam(gear, 'color'); }));
+			function (v) { gear.pencil.c1.on = v; app.applySymmetry(gear, 'color'); app.onGearParam(gear, 'color'); },
+			function (v) { gear.pencil.c1.color = v; app.applySymmetry(gear, 'color'); app.onGearParam(gear, 'color'); }));
 
 		menu.appendChild(colorCheckRow('color 2', gear.pencil.c2.on, gear.pencil.c2.color,
-			function (v) { gear.pencil.c2.on = v; app.onGearParam(gear, 'color'); },
-			function (v) { gear.pencil.c2.color = v; app.onGearParam(gear, 'color'); }));
+			function (v) { gear.pencil.c2.on = v; app.applySymmetry(gear, 'color'); app.onGearParam(gear, 'color'); },
+			function (v) { gear.pencil.c2.color = v; app.applySymmetry(gear, 'color'); app.onGearParam(gear, 'color'); }));
 
 		var speedRow = sliderRow('speed', 0, 4, 0.01, gear.pencil.animSpeed, function (v) {
-			gear.pencil.animSpeed = v; app.onGearParam(gear, 'color');
+			gear.pencil.animSpeed = v; app.applySymmetry(gear, 'color'); app.onGearParam(gear, 'color');
 		});
 		var speedLab = speedRow.firstChild;
 		// prefix follows the GLOBAL color mode (cycles/frequency panel toggle).
@@ -263,8 +321,24 @@
 		speedLabRefresh();
 		menu.appendChild(speedRow);
 
+		menu.appendChild(sliderRow('trail length', 500, Gear.CAP, 500, gear.trailCap, function (v) {
+			app.setTrailCap(gear, v);
+			app.applySymmetry(gear, 'trail');
+			app.onGearParam(gear, 'trail');
+		}));
+		menu.appendChild(el('div', 'help',
+			'soft cap on stored points per pencil (animate mode). period threshold is in the sidebar.'));
+
 		var gb = el('div', 'btns');
-		gb.appendChild(buttonRow('add sub-gear', function () { app.addSubGear(gear); }));
+		gb.appendChild(buttonRow('add sub-gear', function () {
+			// symmetry: add-sub-gear grows the whole level (every same-depth
+			// parent gains one child), instead of just this gear.
+			if (app.symmetry) {
+				var depth = app.depthOf(app.roots, gear);
+				if (depth >= 0) { app.applyLevel(depth + 1, gear.children.length + 1); return; }
+			}
+			app.addSubGear(gear);
+		}));
 		var rm = buttonRow('remove', function () { app.removeGear(gear); });
 		if (!gear.parent) rm.disabled = true;
 		gb.appendChild(rm);
@@ -294,6 +368,8 @@
 		openMenu: openMenu,
 		closeMenu: closeMenu,
 		isMenuOpen: isMenuOpen,
+		menuGear: function () { return currentGear; },
+		rebuildLevels: rebuildLevels,
 		setAutosave: setAutosave,
 		setPaused: setPaused,
 		setMode: function (m) {

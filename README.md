@@ -8,10 +8,18 @@ draw hypotrochoid / epitrochoid curves in the browser. no build step.
 ## features summary
 
 	interactive parent-child gear tree, add / remove sub-gears
+	gear tree level sliders (lvl 1..N): every parent at a depth gets N children
+	  placed at i*360/N degrees; new siblings deep-clone the first child;
+	  `reset levels` collapses the tree to a single chain
+	symmetry mode: context-menu edits mirror to every gear at the same level;
+	  add-sub-gear grows the whole level
 	per-gear: internal/external, speed -1..1, diameter, pencil offset d, width,
 	  two color slots (each with its own enable checkbox) -> 0 colors = no pencil,
 	  1 color = static, 2 colors = animated blend between them
 	  global cycles/frequency color mode (auto per trace mode, user-overridable)
+	per-pencil trail length (soft cap on stored points, animate mode)
+	period threshold: whole-mode bakes whose period exceeds it are skipped
+	  with a toast instead of drawn seam-capped
 	zoom / pan, pause, clear, reset to default scene
 	save scene as a .js file (rename to default.js for startup scene) / load
 	  .js or legacy .json (file or clipboard), autosave to localStorage
@@ -76,12 +84,27 @@ from this menu user can:
 	sliders: gear diameter and rotation speed -1...1
 	move slider of marker pencil position (distance from center of this gear)
 	slider of pencil line width
+	slider of trail length (max stored trail points, animate mode)
 	two color slots, each with its own enable checkbox placed before the picker:
 		if none enabled  -> no pencil is drawn
 		if one enabled    -> static single color
 		if both enabled   -> animated blend between the two colors (speed slider)
 	place sub-gear
 	remove this gear (and its children)
+
+the left panel has a `tree` section:
+
+	symmetry mode checkbox - when on, every context-menu edit above applies
+	to all sibling gears at the same level (added/removed in sync)
+	lvl 1..N sliders - set how many children every parent at that depth has;
+	children are positioned evenly around their parent (i * 360/N degrees).
+	lvl k+1 appears once level k has sub-gears.
+	reset levels button - collapse every level to a single child
+
+and a `whole mode` section:
+
+	period threshold slider - a whole-mode bake whose detected period exceeds
+	this many turns is skipped (toast) instead of drawn with a seam cap
 
 drag context menu using pointer. move by drag caption 'gear' label with unicode ico ✥ near it
 
@@ -168,7 +191,7 @@ wraps the same object in a SETTINGS js module so a saved scene can be renamed to
 colors are hex strings, parsed to rgb floats internally for webgl, example:
 
 	{
-	  "gears": [ { "r": 0.6, "speed": 0.2, "internal": false,
+	  "gears": [ { "r": 0.6, "speed": 0.2, "internal": false, "rot": 0, "trailCap": 20000,
 	               "pencil": { "d": 0.4, "width": 2,
 	                           "c1": { "on": true, "color": "#ff0000" },
 	                           "c2": { "on": false, "color": "#0000ff" },
@@ -178,6 +201,10 @@ colors are hex strings, parsed to rgb floats internally for webgl, example:
 	  "globalSpeed": 1,
 	  "colorMode": "frequency"
 	}
+
+`rot` (orbit angle of the gear around its parent, radians) and `trailCap`
+(soft cap on stored trail points) are optional; legacy files without them
+default to 0 / 20000.
 
 
 ### structure
@@ -190,6 +217,8 @@ colors are hex strings, parsed to rgb floats internally for webgl, example:
 	findings-pitfalls-skills.md - notes for LLM agents
 	CHANGELOG.md - short release notes
 	03-performance-refactoring-plan.md - pan/zoom perf plan (implemented)
+	04-plan-level-sliders-symmetry.md - level sliders + symmetry plan (implemented)
+	05-plan-3D.md - 3D mode plan (next)
 	js/main.js - init, loop
 	js/gear.js - gear math
 	js/render.js - webgl2 line drawing (shaders, buffers, MSAA)

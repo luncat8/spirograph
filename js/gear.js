@@ -45,11 +45,12 @@
 			r: opts.r != null ? opts.r : 0.6,
 			speed: opts.speed != null ? opts.speed : 0.2,
 			internal: opts.internal != null ? opts.internal : false,
+			trailCap: opts.trailCap != null ? Math.max(1, Math.min(opts.trailCap, CAP)) : 20000,
 			pencil: normalizePencil(opts.pencil),
 			children: [],
 			// runtime (filled by initRuntime)
 			parent: null,
-			rot: 0,
+			rot: opts.rot != null ? opts.rot : 0,
 			cx: 0, cy: 0,
 			penx: 0, peny: 0,
 			ratio: 1,
@@ -72,7 +73,7 @@
 
 	function initRuntime(gear, parent) {
 		gear.parent = parent || null;
-		gear.rot = 0;
+		if (gear.rot == null) gear.rot = 0;
 		gear.ring = new Float32Array(CAP * 5);
 		gear.head = 0;
 		gear.count = 0;
@@ -96,7 +97,10 @@
 
 	// push a pen sample (world position + rgb color baked at draw time) into the
 	// ring buffer; later color changes only affect new points, not existing line.
-	function pushPoint(gear, x, y, col) {
+	// `limit` overrides the soft trail cap (whole mode passes CAP so a closed
+	// figure is never trimmed to the animate trail length).
+	function pushPoint(gear, x, y, col, limit) {
+		var cap = limit != null ? limit : (gear.trailCap != null ? gear.trailCap : CAP);
 		if (gear.count === 0) {
 			gear.ring[0] = x; gear.ring[1] = y;
 			gear.ring[2] = col[0]; gear.ring[3] = col[1]; gear.ring[4] = col[2];
@@ -110,7 +114,7 @@
 		var idx = (gear.head + gear.count) % CAP;
 		gear.ring[idx * 5] = x; gear.ring[idx * 5 + 1] = y;
 		gear.ring[idx * 5 + 2] = col[0]; gear.ring[idx * 5 + 3] = col[1]; gear.ring[idx * 5 + 4] = col[2];
-		if (gear.count < CAP) gear.count++;
+		if (gear.count < cap) gear.count++;
 		else gear.head = (gear.head + 1) % CAP;
 	}
 
@@ -196,12 +200,13 @@
 		return { num: h, den: k };
 	}
 
-	var MAX_TURNS = 2000;
-
 	// smallest integer u (in turns) making the whole figure periodic in phi.
+	// turnsRaw is the true LCM (before the MAX_TURNS cap) for the period
+	// threshold check in App.recomputeWhole.
+	var MAX_TURNS = 2000;
 	function detectPeriod(roots) {
 		var dens = [];
-		(function walk(g, ratio) {
+		function walk(g, ratio) {
 			// every gear's own rotation term (speed) and its rolling term
 			// (speed*ratio) enter the closure sum of itself and ALL descendants,
 			// so collect both for every gear — not just pencil ones. skipping a
@@ -214,12 +219,14 @@
 				var cr = c.internal ? (g.r - c.r) / c.r : (g.r + c.r) / c.r;
 				walk(c, cr);
 			}
-		})(roots[0], 1);
+		}
+		for (var ri = 0; ri < roots.length; ri++) walk(roots[ri], 1);
 		var u = 1;
 		for (var i = 0; i < dens.length; i++) u = lcm(u, dens[i]);
+		var turnsRaw = u;
 		var capped = false;
 		if (u > MAX_TURNS) { u = MAX_TURNS; capped = true; }
-		return { u: u, P: 2 * Math.PI * u, turns: u, capped: capped };
+		return { u: u, P: 2 * Math.PI * u, turns: u, turnsRaw: turnsRaw, capped: capped };
 	}
 
 	// sample the full closed figure over [0, P] into every pencil ring.
@@ -246,7 +253,7 @@
 				} else {
 					col = gear.pencil.c1.on ? slotRgb(gear.pencil.c1) : slotRgb(gear.pencil.c2);
 				}
-				pushPoint(gear, gear.penx, gear.peny, col);
+				pushPoint(gear, gear.penx, gear.peny, col, CAP);
 			}
 			for (var ci = 0; ci < gear.children.length; ci++) {
 				sample(gear.children[ci], gear, st.cx, st.cy, st.penA, phi);
@@ -412,6 +419,8 @@
 				r: gear.r,
 				speed: gear.speed,
 				internal: gear.internal,
+				rot: gear.rot,
+				trailCap: gear.trailCap,
 				pencil: {
 					d: gear.pencil.d,
 					width: gear.pencil.width,
