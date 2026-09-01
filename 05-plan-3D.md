@@ -1,0 +1,478 @@
+# 3D mode plan (polar 2-speed spirograph + orbit camera)
+
+## Goal
+
+1. Add a **3D mode** to the existing 2D spirograph. The 3D figure is the same
+   gear-tree drawing lifted into 3D via **polar coordinates with two
+   independent angular speeds**: the in-plane drawing angle (existing gear
+   speeds, `globalSpeed`) and a new global **spin speed** that rotates the
+   drawing plane around the vertical axis. The 2D figure stays fully
+   recognizable (at spin 0 it IS the 2D figure in the XZ plane).
+2. **Menu and context menu adapt to the active dimension** (2D vs 3D): the
+   panel shows a new 3D section (spin speed, camera controls) only in 3D; the
+   per-gear context menu keeps all gear controls in both modes (gear params
+   are dimension-independent) and gains a small "view" quick row in 3D only.
+3. Implement a **user-friendly orbit camera** in 3D: drag-to-orbit, wheel
+   dolly, pan, pinch, auto-rotate, fit view, sane clamping, no gimbal flip,
+   and the same 60+ FPS gesture behavior the 2D pan/zoom already has (direct
+   draw during gestures, one overlay re-bake on settle, auto-tuned
+   decimation).
+
+Constraints (AGENTS.md): no build, classic `<script>` tags, file:// friendly,
+WebGL2 only, zero deps, node-guarded files, no allocations in the frame loop,
+single-tab indentation.
+
+## Context (verified against code)
+
+- `js/gear.js` — gear tree kinematics in the drawing plane. Pen position is
+  `(penx, peny)` in world units (root pivot at origin). Rings store
+  `x y r g b` per point (stride 5, `CAP=40000`, ring buffer). `update()` /
+  `computeWhole()` / `detectPeriod()` are all in-plane.
+- `js/render.js` — screen-space analytic-AA line renderer. JS bakes **screen
+  pixel coordinates** (via `w2s`), the vertex shader only maps to clip space,
+  the fragment shader measures `gl_FragCoord` distance to the segment. The
+  renderer is deliberately 2D; it never sees world coordinates. Overlay FBO +
+  blit, glow pass, round-join discs.
+- `js/main.js` — `App` state (`view.zoom/pan`, `S/cx0/cy0` transform), pointer
+  handlers (`onDown/onMove/onUp/onWheel`), gesture bypass
+  (`isGestureActive()`, `viewDirty`, wheel debounce), `renderScene()` with the
+  gesture / overlay / direct branches, `drawGearSegments` + decimated variant,
+  `tuneGestureBudget()`, autosave, scene save/load.
+- `js/gui.js` — panel (animate/whole, color mode, view toggles, scene ops) +
+  per-gear context menu (`openMenu`).
+
+Key insight that keeps this cheap: **the renderer consumes screen-space
+segments, so a 3D mode can project world points to screen pixels in JS (one
+mat4 per frame, ~15 flops + two trig per point) and feed the existing
+renderer unchanged** — including the overlay FBO, the gesture bypass, the
+join discs and the decimation. No shader changes, no second line pipeline, no
+GL state machinery beyond enabling a depth buffer.
+
+## Math: the 2-speed polar construction
+
+The user-facing requirement is "3D mode with 2 speeds (probably polar coord)".
+Take the pen's position in the drawing plane in **polar form** about the root
+pivot (free conversion, we already have `penx/peny`):
+
+	ρ(t) = hypot(px, py)        (pen radius)
+	α(t) = atan2(py, px)        (pen angle in the drawing plane)   — speed 1
+
+Speed 1 is everything that moves the pen in the plane: each gear's `speed`
+slider, `globalSpeed`, the pencil `d` offset — unchanged, exactly as today.
+It drives α(t) (and ρ(t)).
+
+The **second speed** is a new global `spinSpeed` k: the drawing plane rotates
+around the vertical axis (the z axis), azimuth φ(t) = k · rootRot(t) where
+`rootRot` is the root gear's accumulated rotation in radians (the same clock
+animate mode uses). The 3D point is the standard **spherical polar map** of
+(ρ, α, φ):
+
+	x3 = ρ cos α cos φ = px cos φ
+	y3 = ρ cos α sin φ = px sin φ
+	z3 = ρ sin α        = py
+
+Equivalently: the classic 2D curve is drawn on a **vertical plane through the
+z axis** that spins at the second speed; the trail accumulates in 3D. At
+φ = 0 the figure is exactly the 2D curve in the XZ plane. As the plane spins
+the trail sweeps the familiar "3D spirograph" surface of revolution. The two
+speeds are explicit: dα/dt (gears) and dφ/dt = k · d(rootRot)/dt (spin).
+
+Why not the naive cylindrical lift (r = ρ, θ = φ, z = ρ)? That maps the
+in-plane angle α away — the figure degenerates into a radial wobble wrapped
+around a cone and the spirograph shape is lost. The rotating-plane lift
+preserves the full 2D figure at every instant. (Rejected alternatives
+section below.)
+
+### Closure in whole mode (the one subtle math point)
+
+In 3D the figure closes only if the plane azimuth returns to itself:
+φ(P) ≡ 0 (mod 2π) at the period P = 2π·u. φ(P) = k · rootRot(P) and
+rootRot(P) = root.speed · 2π·u, so we need **k · root.speed · u ∈ ℤ**.
+
+`detectPeriod` already collects `rationalize(root.speed).den` (as the root's
+own `speed` and `speed*ratio` terms). Adding the **product** term
+`rationalize(k * root.speed).den` per root to the LCM makes the 3D figure
+close. (Adding only `rationalize(k).den` is NOT sufficient — with
+root.speed = 1/2 and k = 1/2 the product is 1/4 and u must be divisible by 4;
+verified by counterexample.) `snapAllSpeeds` already snaps every gear speed
+to a low-denominator fraction in whole mode; `spinSpeed` is snapped the same
+way (`snapNice`, den ≤ 12), so whole-mode 3D periods stay small and closed.
+
+### Per-point phase
+
+The azimuth of a ring point is a function of **when it was drawn**, so the
+ring must remember the root rotation at push time. Add a parallel
+`gear.phaseRing` (`Float32Array(CAP)`, +160 KB per pencil at CAP=40000),
+written by `pushPoint` **in both modes** (cheap; the value is already in the
+recursion). The existing stride-5 geometry/color ring and every consumer of it
+(`drawGearSegments`, `recolorWhole`, `forEachSegment`, `tuneGestureBudget`)
+stay **completely untouched** — the 2D hot path is not disturbed.
+
+- animate mode: phase = root.rot at push (cached on each gear as `_rrot` by
+  `update()`, which already recurses from the roots).
+- whole mode: phase = root.rot at the sample (`root.speed · phi` in
+  `computeWhole`, whose recursion already carries the root state).
+
+Then the 3D position of ring point k is a pure function of the stored data:
+
+	φ_k = App.spinSpeed · phaseRing[k]
+	x3 = x_k · cos φ_k,  y3 = x_k · sin φ_k,  z3 = y_k
+
+Consequences (all good):
+
+- Changing `spinSpeed` in **animate** mode re-wraps the whole existing trail
+  instantly — no re-simulation, just re-projection at draw time.
+- Changing `spinSpeed` in **whole** mode snaps k, re-detects the period
+  (closure) and re-samples — same one-shot cost as any gear-speed edit today.
+- Switching 2D ↔ 3D never touches the rings; only the draw mapping changes.
+
+## Orbit camera (user-friendly)
+
+New `js/camera3.js` (node-guarded, no DOM): minimal vec3/mat4 math +
+orbit-camera state, all pure functions so it unit-tests under node.
+
+State: target `T` (vec3), yaw θ, pitch ψ, distance d.
+
+	eye = T + d · (cosψ cosθ, cosψ sinθ, sinψ)
+	view = lookAt(eye, T, up = [0,0,1])
+	proj = perspective(fovy 50°, aspect 1, near, far)
+	near = max(0.005·d, 1e-4), far = 200·d   (stable depth range)
+
+Screen projection (top-left origin, matches `w2s` convention):
+
+	p_view = M · p,  M = proj·view (one 4×4, reused scratch)
+	sx = (p_view.x/p_view.w + 1) · 0.5 · W
+	sy = (1 − p_view.y/p_view.w) · 0.5 · H
+
+"User-friendly" specifics:
+
+- **Drag to orbit** (left button on empty space; 1-finger touch). Sensitivity
+  ~0.005 rad/px. Yaw unbounded (normalized), **pitch clamped to ±89°** — no
+  gimbal flip, no pole tumble.
+- **Wheel / pinch = dolly**: exponential distance scale `exp(−Δ·0.0015)`
+  (same constant as the 2D wheel zoom), clamped to `[0.05·R, 40·R]` where R is
+  the fit radius.
+- **Pan**: right-drag or middle-drag (mouse), 2-finger drag (touch). Target
+  moves in the camera plane; speed scales with `dist` so panning feels
+  constant at any zoom. (Right/middle drag already pans in 2D, so the muscle
+  memory carries over.)
+- **Double-click empty / 'f' / fit button**: ease to a framing view in
+  ~300 ms (lerp yaw/pitch/dist/target — camera path is a straight spherical
+  lerp of the 4 state values; good enough and allocation-free).
+- **Fit radius**: bounding sphere of the trail ring (one pass over the points,
+  one-time) or, for an empty trail, the skeleton extent
+  (max |gear center| + r + d over the tree).
+- **Default view on entering 3D**: yaw = π/2 (eye on +y so the φ = 0 plane
+  faces the viewer, figure upright), pitch = 0.3, dist = fit, target = origin.
+- **Auto-rotate camera** (optional checkbox): slow yaw drift (~0.2 rad/s).
+  When on, the camera moves every frame, so the scene renders per frame —
+  that path uses the gesture decimation budget (below) to stay under frame
+  time; full-quality overlay resumes when it is switched off.
+- Inertia (velocity + ~0.88/frame damping on orbit/pan) is marked optional
+  polish, not required for v1.
+
+## Controls by dimension (menu + context menu)
+
+| control | 2D | 3D |
+|---|---|---|
+| 2D / 3D switch (panel, 'g' key) | ✓ | ✓ |
+| Animate / Whole, color mode, anim speed | ✓ | ✓ |
+| spin speed slider (panel) | – | ✓ |
+| auto-rotate camera (panel) | – | ✓ |
+| fit view (f) / reset camera (panel) | – | ✓ |
+| overlay / circles / dial / trail / points / glow | ✓ | ✓ |
+| per-gear context menu (internal, diameter, speed, pencil, colors, add/remove) | ✓ | ✓ (same items) |
+| context menu "view" quick row (fit / reset) | – | ✓ |
+| left-drag empty space | pan | orbit |
+| right / middle-drag | pan | pan |
+| wheel | zoom | dolly |
+| pinch (2 fingers) | zoom | dolly + pan |
+| 1-finger drag (touch, empty) | pan | orbit |
+| tap / click on a gear | context menu | context menu (projected hit test) |
+| double-click empty / 'f' | – | fit view |
+| help text (panel) | 2D wording | 3D wording |
+
+Gear parameters are dimension-independent, so the context menu shows the
+*same* gear controls in 3D — nothing is hidden and nothing gear-related is
+added. The only 3D addition is the small "view" quick row (fit / reset
+camera) because after editing a gear in 3D you often want to reframe.
+The panel's 3D section is hidden in 2D (`GUI.setDim` toggles it), so each
+mode shows exactly the controls it needs.
+
+## Changes
+
+### A. `js/gear.js` — phase tracking + closure term
+
+- `makeGear`/`initRuntime`: add `gear.phaseRing = null` (allocated in
+  `initRuntime` like `ring`) and `gear._rrot = 0`.
+- `pushPoint(gear, x, y, phase, col)`: write `phaseRing[idx] = phase` next to
+  the existing ring write (both branches of the ring push). Stride-5 ring
+  untouched.
+- `clearTrace`: nothing new needed (head/count gate reads).
+- `update(gear, parent, pcx, pcy, carry, dt, globalSpeed, rootRot)`: accept
+  and store `gear._rrot = rootRot`; recursion passes it down. `main.js` calls
+  it with `root.rot` (after the increment — i.e. the rotation the pushed
+  point is drawn at).
+- `computeWhole`: pass the root's own rotation (`root.speed * phi`, i.e. the
+  root's `rot` after `sample` set it) down the recursion as the phase; store
+  `gear._rrot` so the whole-mode path and the animate path agree exactly.
+- `detectPeriod(roots, spinK)`: when `spinK != 0`, push
+  `rationalize(spinK * root.speed).den` for **each root** into the `dens`
+  list (product, see closure math above). 2D callers pass 0 → behavior
+  unchanged.
+
+### B. `js/camera3.js` (new file, node-guarded)
+
+Pure helpers only (all output arrays passed in, no allocations):
+
+	mat4Perspective(out, fovy, aspect, near, far)
+	mat4LookAt(out, eye, target, up)
+	mat4Mul(out, a, b)
+	projectPoint(m, x, y, z) → {sx, sy}  (or writes a scratch pair)
+	orbit helpers: dolly(cam, factor), orbitBy(cam, dyaw, dpitch) [clamps],
+	panBy(cam, dxPx, dyPx, W, H), fitRadius(rings…), defaultCamera()
+
+`cam` is a plain object `{ yaw, pitch, dist, target: [x,y,z] }` owned by
+`App.cam` (serializable directly). This file is pure — it unit-tests under
+node with no DOM.
+
+### C. `js/render.js` — depth buffer only
+
+- `init`: request `depth: true` in `getContext`.
+- `R.depth(on)`: `gl.enable/disable(DEPTH_TEST)` + `gl.depthMask(on)`.
+  2D `begin()` calls `R.depth(false)` (current behavior, zero regression);
+  the 3D path calls `R.depth(true)`.
+- Overlay FBO: attach a `DEPTH_COMPONENT24` renderbuffer in `overlayResize`
+  (recreated on resize), clear it with the color in `overlay.clear()`. This
+  is what makes the baked 3D overlay correct: the bake resolves occlusion
+  once, the blit stays a flat quad.
+- Everything else (segments, dots, glow, blit, scratch buffers) unchanged.
+
+### D. `js/main.js` — dim state, projection, 3D render path, pointer split
+
+New `App` state: `dim: '2d'`, `spinSpeed: 0`, `cam: defaultCamera()`.
+Module scratch (allocated once): `M` (Float32Array(16)),
+`projScratch` (Float32Array(CAP·5)) — projected **screen x, screen y, r, g, b**
+per point (colors copied from the ring, same stride-5 layout), reused across
+gears; a scratch gear object `{ ring: null, head: 0, count: 0 }` mutated per
+gear (no per-frame allocation).
+
+- `planeTo3D(u, v, phi)` → `(u·cosφ, u·sinφ, v)` — used by the trail
+  projection, the skeleton, the pen points and `hitGear`.
+- `projectRing(g, startK, endK)`: for k in [startK, endK], compute
+  `phi = App.spinSpeed * g.phaseRing[k]`, world
+  `(x·cosφ, x·sinφ, y)`, project through `M`, write `(sx, sy)` plus the
+  ring's r/g/b into `projScratch[k]`. ~0.5–1.5 ms at full CAP (two trig calls
+  per point). Points behind the near plane are clamped (w → small epsilon)
+  so segments draw to the screen edge instead of exploding; acceptable
+  because pitch is clamped and dolly has a floor (noted in edge cases).
+- **Reuse the existing draw loops verbatim**: `drawGearSegments` /
+  `drawGearSegmentsDecimated` consume `ring` + `head`/`count` and map through
+  `cx0 + (v + pan)·S`, reading colors at ring offsets 2–4. Feed them the
+  projected buffer through the scratch gear with `head=0`, `count=g.count`,
+  `S=1`, `pan=[0,0]`, `cx0=cy0=0` → the projected screen coordinates (and
+  colors) fall out with **zero changes to the hot loop**, including
+  turn-gated join discs and end caps. `projectRing` fills only the requested
+  range, so the incremental overlay bake projects only the new points.
+- `renderScene()` branches on `App.dim` at the top:
+  `if (App.dim === '3d') return renderScene3D();`
+  `renderScene3D()` mirrors the 2D structure exactly — gesture branch (direct
+  draw at live camera, decimated when over budget), overlay branch (bind →
+  invalid ? full bake : incremental bake → unbind → begin(BG) → blit), direct
+  branch — with `R.depth(true)` during the trail pass, plus a
+  `drawSkeleton3D()` (projected circles as 64-seg polylines via `R.seg` — a
+  3D circle projects to an ellipse, so `R.circle` cannot be reused; dial
+  hands and faint world axes X/Y/Z + a subtle current-plane spoke pair drawn
+  the same way) and projected pen points (dot / glow).
+- `isGestureActive()` extended with `camActive` (set while orbit/pan/dolly
+  drags, the wheel-debounce window, the fit ease and auto-rotate are active).
+  Camera moves set `viewDirty = true` + `requestRender()` exactly like 2D
+  pan/zoom; `onUp` and the wheel debounce re-bake the overlay once on settle
+  — the whole 0.4.0 gesture machinery carries over untouched.
+- `tuneGestureBudget()`: also measure the 3D path (project + draw) once and
+  keep a separate `GESTURE_SEG_BUDGET_3D` (projection adds ~10–20 %), used by
+  the 3D gesture branch. Debug override `window.SPIRO_GESTURE_SEG_BUDGET`
+  applies to both.
+- Pointer handlers branch on `App.dim`:
+  - `onDown`: 3D + left button on empty space → start **orbit** (not pan);
+    on a gear → menu (unchanged); buttons 1/2 → pan. Tap logic unchanged
+    (touch: pendingGear).
+  - `onMove`: 3D + orbiting → `orbitBy`; panning → `panBy` (screen-space,
+    dist-scaled); 2 pointers → dolly(pinch ratio) + `panBy`(midpoint delta).
+  - `onWheel`: 3D → `dolly` (same debounce flow).
+  - `hitGear`: 3D → hit test on the **projected** gear center with
+    `max(projectedRadius, 8px)` where projectedRadius = screen distance
+    between the projected center and the projected point at radius `r` along
+    the current plane azimuth.
+- `App.setDim(d)`: set `App.dim`; `GUI.setDim`; entering 3D → `fitView()`
+  (eased) + toast hint; whole mode → `recomputeWhole()` (spin term now
+  participates); `resetScene()` also resets `App.cam` in 3D. 'g' key toggles.
+- `App.setSpinSpeed(v)`: store; whole mode → `recomputeWhole()` (snaps k,
+  re-detects period); animate → `invalidateOverlay()` + `markDirty()`
+  (re-projection only — instant re-wrap, no re-sim).
+- `App.fitView()`: compute fit radius, ease camera; 'f' key (3D only).
+- Scene save/load: `sceneObject()` gains `dim`, `spinSpeed`, `camera`;
+  `loadObject`/`deserialize` default them (`'2d'`, `0`, `null` → default
+  camera on first entry to 3D). Legacy files, `default.js` and the autosave
+  all keep working.
+
+### E. `js/gui.js` — panel 3D section + dim-aware help
+
+- `buildPanel`: a `2D | 3D` button pair (like the color-mode pair) above
+  Animate/Whole; a new `#3dsec` section appended, hidden in 2D:
+  - `sliderRow('spin speed', -1, 1, 0.01, …)` — snap via `app.snapNice`
+    while `app.mode === 'whole'` (mirrors the gear speed slider).
+  - `checkboxRow('auto-rotate camera', …)`.
+  - buttons `fit view (f)` and `reset camera`.
+  - help line swaps to `3D: drag orbit - wheel dolly - right/middle drag pan
+    - double-click fit`.
+- `GUI.setDim(d)`: toggle the button pair's `.active`, show/hide `#3dsec`,
+  swap the help text.
+- `openMenu`: in 3D only, append the "view" quick row (fit / reset camera
+  buttons). Gear rows unchanged in both dims.
+- `GUI.setMode/setPeriod/setColorMode` unchanged.
+
+### F. `index.html` + docs
+
+- `<script src="js/camera3.js"></script>` before `main.js`.
+- README: features, controls table, scene format example, structure list;
+  CHANGELOG 0.5.0 entry; implementation-log "done" entry; findings-pitfalls
+  notes (projection convention matches `w2s` top-left; depth test must be
+  disabled for the 2D path; phaseRing is the 3D clock).
+
+### Scene format
+
+	{
+	  "gears": [ … ],
+	  "view": { "zoom": 1, "pan": [0, 0] },
+	  "globalSpeed": 1,
+	  "colorMode": "frequency",
+	  "dim": "3d",
+	  "spinSpeed": 0.5,
+	  "camera": { "yaw": 1.5708, "pitch": 0.3, "dist": 4.2, "target": [0, 0, 0] }
+	}
+
+All new fields optional on load (defaults: 2d / 0 / default camera).
+
+## Edge cases (verified reasoning)
+
+- **Closure counterexample**: root.speed 1/2, k 1/2 — `den(k)` alone gives
+  u=2 and a half-turn seam; `den(k·root.speed)` gives u=4 and closure. The
+  product term is mandatory (see Math section).
+- **spinSpeed 0** in 3D: plane frozen, figure = 2D curve in the XZ plane;
+  default camera (eye on +y) shows it upright and face-on. Valid, no special
+  case beyond `rationalize(0)` guard (return `{num:0,den:1}` already exists).
+- **spinSpeed change in animate mode** re-projects the stored trail (phase
+  is per-point) — no trace re-simulation, no history loss.
+- **Whole-mode cap**: MAX_TURNS=2000 cap can still force a seam when the
+  snapped k pushes the period over the cap — same existing capped behavior,
+  the period readout already says "(capped)".
+- **Empty / 1-point trail in 3D**: fit falls back to skeleton extent;
+  `drawGearSegments` range guards already handle n ≤ 1.
+- **Camera inside the figure**: dolly floor 0.05·R + pitch clamp keep it
+  rare; behind-near points clamp to the screen edge (streak artifact,
+  bounded) — real segment clipping noted as future work.
+- **Incremental bake in 3D**: valid only while the camera is static — camera
+  motion always routes through the gesture path and invalidates the overlay
+  on settle, exactly like 2D pan/zoom.
+- **Overlay FBO depth**: the renderbuffer is recreated in `overlayResize`
+  and cleared with `overlay.clear()`; without it the baked 3D figure would
+  have no occlusion. 2D never touches it (`R.depth(false)`).
+- **Auto-rotate + whole mode**: whole mode's 0-renders-when-idle only holds
+  with the camera still; auto-rotate forces per-frame render via the
+  decimated path (budget 3D), full quality when disabled.
+- **Multiple roots / deep chains**: phase = the point's own tree root's rot
+  (cached `_rrot` during recursion); `detectPeriod` adds one product term per
+  root.
+- **Tap-to-menu in 3D**: hit test on projected centers; gears that are
+  "behind" the figure are still clickable if their projected center is
+  visible within the radius slack — acceptable, matches 2D's eff-radius
+  slack (6px).
+- **Resize**: canvas is square (aspect 1) so the projection is unchanged; the
+  FBO + depth RB are recreated by the existing `R.resize` path.
+- **Legacy scenes / autosave**: missing `dim`/`camera` → 2D with the current
+  view; nothing in `default.js` needs to change.
+- **Hot path**: projection writes into preallocated scratch; the scratch gear
+  is a module-level object mutated per gear; `M` is one reused 4×4 — no
+  allocations in the frame loop (AGENTS.md).
+
+## Rejected alternatives
+
+- **GPU-side 3D (matrices in the vertex shader, world-space vertices).**
+  Invasive: new shader, new buffer layout, depth/blend handling, and it
+  breaks the overlay-blit and gesture machinery. JS projection is ~0.5 ms at
+  CAP and reuses every existing path. Rejected.
+- **Naive cylindrical lift (r=ρ, θ=φ, z=ρ).** The in-plane angle α vanishes;
+  the figure degenerates into a radial wobble on a cone and stops looking
+  like a spirograph. Rejected (this is why the plan says "probably polar
+  coord" → the spherical/rotating-plane map, which keeps α).
+- **Per-gear second speed.** The requested "2 speeds" are the drawing speed
+  and one global spin; a per-gear spin adds a second dimension axis and
+  confusing UI. Listed as future work.
+- **Painter's-sort / no depth.** A depth buffer is one renderbuffer and a
+  GL state toggle; per-segment sorting is O(n log n) per frame and still
+  wrong for crossing segments. Rejected.
+- **Stride-6 ring (x y phase r g b).** Touches every ring consumer
+  (colors move to offsets 3–5), including the tuned 2D hot loop. The parallel
+  `phaseRing` array keeps all 2D code byte-identical. Rejected.
+- **Turntable plane (horizontal).** Rotating a horizontal plane about z is
+  the identity — not a 2-speed construction. Rejected.
+- **`R.circle` for 3D circles.** A 3D circle projects to an ellipse; the
+  skeleton emits projected polylines via `R.seg` instead. Rejected.
+
+## Files touched
+
+- `js/gear.js` — phaseRing, `_rrot`, `pushPoint(…, phase, …)`,
+  `update(…, rootRot)`, `computeWhole` phase, `detectPeriod(roots, spinK)`.
+- `js/camera3.js` (new) — mat4/lookAt/perspective/projection + orbit state,
+  fit, node-guarded.
+- `js/render.js` — `depth: true` context, `R.depth(on)`, overlay depth
+  renderbuffer.
+- `js/main.js` — `App.dim/spinSpeed/cam`, `planeTo3D`, `projectRing`,
+  `renderScene3D`, `drawSkeleton3D`, scratch gear + `M`/`projScratch`,
+  pointer split by dim, `setDim/setSpinSpeed/fitView/resetCamera`,
+  `GESTURE_SEG_BUDGET_3D` tuning, keyboard 'g'/'f', scene fields,
+  `hitGear` 3D.
+- `js/gui.js` — dim switch, 3D section (spin, auto-rotate, fit, reset),
+  `GUI.setDim`, 3D-only context-menu view row, help text.
+- `index.html` — camera3.js script tag.
+- `04-plan-3D.md` (this file), README.md, CHANGELOG.md,
+  implementation-log.txt, findings-pitfalls-skills.md.
+
+## Validation
+
+- `node --check` on all six js files.
+- Node unit harness (extracts real sources like the 0.4.0 harness):
+  - camera3: lookAt rows orthonormal and eye/target/up consistent; a known
+    point at a known pose projects to the expected pixel (both inside and
+    outside the frustum); pitch clamps at ±89°; dolly clamps; pan scale ∝
+    dist.
+  - closure: detectPeriod with k=1/2, root.speed=1/2 → u divisible by 4;
+    k=0 → same u as 2D; a sampled 3D whole ring's first and last points
+    coincide (x,y,z) for snapped k, and differ (open seam) for an
+    unsnapped k (documents the requirement).
+  - phaseRing: pushPoint writes phase at wrap-around (head=CAP-1 chains);
+    recolorWhole/forEachSegment/drawGearSegments read the stride-5 ring with
+    the new write path — byte-identical output vs the old pushPoint for
+    2D scenes.
+  - projection: projectRing at spinSpeed 0 reproduces the 2D figure rotated
+    into the XZ plane (spot-check with the default scene).
+- Node shim harness (DOM/WebGL stubs, like 0.4.0): boot, switch dim, orbit
+  via synthetic pointer events, wheel dolly, pinch, fit, spin slider in both
+  trace modes, whole-mode recompute on spin change, save/load roundtrip with
+  camera, autosave restore in 3D, gesture bypass + single rebake on release.
+- Browser (manual): orbit feel + pole clamp, dolly limits, pan at two zoom
+  levels, overlay rebake on release, decimation on a weak GPU (or small
+  `SPIRO_GESTURE_SEG_BUDGET`), whole-mode 3D closure with snapped spin,
+  skeleton/dial/points/glow in 3D, context menu in both dims, 'f'/'g', resize.
+
+## Open questions / future work
+
+- Real segment clipping against the near plane (currently edge-clamped
+  streaks).
+- Camera inertia / momentum polish.
+- Screen-space axis gizmo (small XYZ triad) and/or ground grid.
+- Line width × 1/dist for perspective-correct thickness (toggle).
+- Per-gear spin as a follow-up.
+- Chunked post-gesture overlay rebake (carried over from 03-plan).
+- 3D export (OBJ) of the whole-mode ring.

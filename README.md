@@ -126,23 +126,6 @@ b-r-b-r-...
 color1-color2 is not same as color2-color1. and it should not do whole hue wheel 
 
 
-### TODO
-
-plan + status: 03-performance-refactoring-plan.md (implemented, see CHANGELOG 0.4.0)
-
-1. done — anim-speed slider in whole mode rebuilds via color-only re-bake
-   (`Gear.recolorWhole` walks the existing ring, no geometry resample).
-2. done — pan/zoom stays 60+ FPS in both modes: while a gesture is active the
-   ring is drawn directly at the live view transform (auto-tuned decimation on
-   weak GPUs); the raster overlay FBO re-bakes once on gesture end. whole mode
-   renders 0 frames when idle (no per-frame re-render of the finished figure).
-3. done — color animation mode is a single global toggle in the panel
-   (auto: 'frequency' in animate, 'cycles' in whole; user-overridable). the
-   per-pencil cycles/frequency toggle is removed; the per-pencil slider stays.
-4. done — save writes a .js scene module (SETTINGS IIFE, node-compatible);
-   load accepts .js and legacy .json; `default.js` next to index.html loads at
-   startup when there is no autosave (shipped example included).
-
 
 ### dependencies
 
@@ -155,7 +138,6 @@ no internet links in code. if need any lib to run - download it and link as js f
 ### requirements
 
 modern browser with WebGL2 support
-
 
 
 ### controls
