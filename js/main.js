@@ -21,6 +21,7 @@
 		autosaveOK: true,
 		needsRender: false,
 		mode: 'animate',
+		colorMode: 'frequency',
 		showCircles: true,
 		showDial: false,
 		showPoints: false,
@@ -29,6 +30,16 @@
 		currentPeriod: null,
 		overlay: { on: true, invalid: true }
 	};
+
+	// hoisted renderer refs for the per-frame hot path (created once at init).
+	var Rseg = R.seg, Rflush = R.flush, Rdot = R.dot;
+	var RvCount = R.vCount, RmaxVert = R.maxVert;
+
+	// gesture-draw segment budget: auto-tuned at init by tuneGestureBudget() to
+	// the largest ring size this device can push inside GESTURE_FRAME_SLICE_MS.
+	// scenes exceeding it are decimated only while a pan/zoom gesture is active.
+	var GESTURE_SEG_BUDGET = 60000;      // provisional; replaced at init
+	var GESTURE_FRAME_SLICE_MS = 8;      // target ms per frame for gesture draw
 
 	var last = 0;
 	var panning = false;
@@ -40,6 +51,17 @@
 	var pinchDist = 0, pinchMidX = 0, pinchMidY = 0;
 	var pendingGear = null, pendingX = 0, pendingY = 0;
 	var TAP_PX = 8;
+
+	// view-change tracking: while a gesture (drag / pinch / wheel) is active the
+	// trail is drawn directly to screen at the live transform and the overlay
+	// FBO is re-baked once on release (see renderScene / onUp / onWheel).
+	var viewDirty = false;
+	var wheelActive = false;
+	var wheelTimer = 0;
+
+	function isGestureActive() {
+		return panning || pointers.size >= 2 || wheelActive;
+	}
 
 	function computeLayout() {
 		var shortSide = Math.min(window.innerWidth, window.innerHeight);
@@ -174,19 +196,44 @@
 	App.setShowPoints = function (v) { App.showPoints = v; markDirty(); };
 	App.setGlow = function (v) { App.glowPoints = v; markDirty(); };
 
-	// mode-appropriate default for per-pencil animMode. 'frequency' (hue/sec)
+	// mode-appropriate default for the GLOBAL color mode. 'frequency' (hue/sec)
 	// is the natural reading in animate mode (continuous color flow at a rate);
 	// 'cycles' (forward+back sweeps per period) is the natural reading in whole
-	// mode (a closed curve has an integer number of color cycles).
+	// mode (a closed curve has an integer number of color cycles). the user can
+	// override globally; the next mode switch re-applies the mode default.
 	function defaultAnimMode(mode) { return mode === 'whole' ? 'cycles' : 'frequency'; }
+
+	// color mode is global (single toggle in the panel, applies to every pencil).
+	// pencils still carry a per-pencil animMode so legacy files keep working, but
+	// it is always synced to App.colorMode after load / setColorMode / setMode.
+	function applyColorMode() {
+		for (var i = 0; i < App.allGears.length; i++) App.allGears[i].pencil.animMode = App.colorMode;
+	}
+
+	App.setColorMode = function (m) {
+		if (m !== 'cycles' && m !== 'frequency') m = defaultAnimMode(App.mode);
+		App.colorMode = m;
+		applyColorMode();
+		if (App.mode === 'whole') {
+			// ring colors are baked: re-bake color-only and repaint
+			Gear.recolorWhole(App.roots);
+			if (App.overlay.on) App.invalidateOverlay(); else markDirty();
+		} else {
+			// animate mode bakes color per point: only new points are affected
+			markDirty();
+		}
+		GUI.setColorMode(m);
+		GUI.refreshAnimMode && GUI.refreshAnimMode();
+	};
 
 	App.setMode = function (m) {
 		App.mode = m;
-		var def = defaultAnimMode(m);
-		for (var i = 0; i < App.allGears.length; i++) App.allGears[i].pencil.animMode = def;
+		App.colorMode = defaultAnimMode(m);
+		applyColorMode();
 		if (m === 'whole') App.recomputeWhole();      // fills ring + bakes
 		else if (m === 'animate') App.clearTraces();   // fresh tracing
 		GUI.setMode(m);
+		GUI.setColorMode(App.colorMode);
 		GUI.refreshAnimMode && GUI.refreshAnimMode();
 		markDirty();
 		if (App.overlay.on) App.invalidateOverlay();
@@ -199,6 +246,7 @@
 		App.globalSpeed = 1;
 		recomputeTransform();
 		rebuildAll();
+		applyColorMode();
 		GUI.closeMenu();
 		afterSceneChange();
 	};
@@ -210,8 +258,8 @@
 			internal: true,
 			pencil: { d: parent.r * 0.2, width: 2, c1: { on: true, color: '#ffffff' }, c2: { on: false, color: '#ff8a3d' } }
 		});
-		// new sub-gear inherits the mode-appropriate default for animMode
-		child.pencil.animMode = defaultAnimMode(App.mode);
+		// new sub-gear inherits the global color mode
+		child.pencil.animMode = App.colorMode;
 		parent.children.push(child);
 		Gear.initRuntime(child, parent);
 		Gear.update(child, parent, parent.cx, parent.cy, parent.phase != null ? parent.phase : parent.rot, 0, App.globalSpeed);
@@ -240,26 +288,28 @@
 		} else fallbackCopy(json);
 	};
 
+	// scene file format is a JS module exposing SETTINGS (node-friendly IIFE),
+	// so a saved file can be dropped in next to index.html as `default.js` to
+	// become the startup scene. legacy .json files still load.
 	App.downloadScene = function () {
-		var json = serialize();
-		var blob = new Blob([json], { type: 'application/json' });
+		var blob = new Blob([sceneJs()], { type: 'application/javascript' });
 		var url = URL.createObjectURL(blob);
 		var a = document.createElement('a');
-		a.href = url; a.download = 'spirograph.json';
+		a.href = url; a.download = 'spirograph.js';
 		document.body.appendChild(a); a.click(); document.body.removeChild(a);
 		URL.revokeObjectURL(url);
-		toast('saved file');
+		toast('saved spirograph.js (rename to default.js for startup scene)');
 	};
 
 	App.loadFile = function () {
 		var inp = document.createElement('input');
-		inp.type = 'file'; inp.accept = 'application/json,.json';
+		inp.type = 'file'; inp.accept = '.js,.json,.txt,application/json,application/javascript,text/javascript';
 		inp.addEventListener('change', function () {
 			var f = inp.files[0];
 			if (!f) return;
 			var rd = new FileReader();
 			rd.onload = function () {
-				try { loadObject(JSON.parse(rd.result)); toast('scene loaded'); }
+				try { loadSceneText(rd.result); toast('scene loaded'); }
 				catch (e) { toast('load failed: ' + e.message); }
 			};
 			rd.readAsText(f);
@@ -270,14 +320,57 @@
 	App.loadClipboard = function () {
 		if (navigator.clipboard && navigator.clipboard.readText) {
 			navigator.clipboard.readText().then(function (t) {
-				try { loadObject(JSON.parse(t)); toast('scene loaded'); }
+				try { loadSceneText(t); toast('scene loaded'); }
 				catch (e) { toast('paste failed: ' + e.message); }
 			}, function () { toast('clipboard blocked'); });
 		} else toast('clipboard unavailable');
 	};
 
+	function sceneObject() {
+		return Gear.serialize(App.roots, App.view, App.globalSpeed, App.colorMode);
+	}
+
 	function serialize() {
-		return JSON.stringify(Gear.serialize(App.roots, App.view, App.globalSpeed));
+		return JSON.stringify(sceneObject());
+	}
+
+	function sceneJs() {
+		return '(function (root) {\n' +
+			'var S = ' + JSON.stringify(sceneObject(), null, '\t') + ';\n' +
+			'if (typeof module !== \'undefined\' && module.exports) module.exports = S;\n' +
+			'else root.SETTINGS = S;\n' +
+			'})(typeof window !== \'undefined\' ? window : globalThis);\n';
+	}
+
+	// accept a JSON scene or a SETTINGS js module (evaluated in a throwaway
+	// script tag so file:// works; the module writes window.SETTINGS).
+	function loadSceneText(txt) {
+		var t = txt.replace(/^\uFEFF/, '').trim();
+		if (t.charAt(0) === '{' || t.charAt(0) === '[') {
+			loadObject(JSON.parse(t));
+			return;
+		}
+		var s = document.createElement('script');
+		s.textContent = txt;
+		document.body.appendChild(s);
+		document.body.removeChild(s);
+		if (!window.SETTINGS) throw new Error('no SETTINGS export found');
+		loadObject(window.SETTINGS);
+	}
+
+	// colorMode for a loaded scene: explicit field, else the mode all pencils
+	// agree on (legacy files), else the current mode's default.
+	function colorModeFromScene(d) {
+		if (d.colorMode === 'cycles' || d.colorMode === 'frequency') return d.colorMode;
+		var mode = null, agree = true;
+		var all = Gear.flatten(d.roots);
+		for (var i = 0; i < all.length; i++) {
+			var pm = all[i].pencil.animMode;
+			if (pm !== 'cycles' && pm !== 'frequency') continue;
+			if (mode === null) mode = pm;
+			else if (mode !== pm) { agree = false; break; }
+		}
+		return (agree && mode) ? mode : defaultAnimMode(App.mode);
 	}
 
 	function loadObject(obj) {
@@ -285,8 +378,11 @@
 		App.roots = d.roots;
 		App.view = d.view;
 		App.globalSpeed = d.globalSpeed;
+		App.colorMode = colorModeFromScene(d);
 		rebuildAll();
+		applyColorMode();
 		GUI.closeMenu();
+		GUI.setColorMode(App.colorMode);
 		recomputeTransform();
 		afterSceneChange();
 	}
@@ -391,8 +487,8 @@
 				zoomAbout(newMidX, newMidY, newDist / pinchDist);
 				App.view.pan[0] += (newMidX - pinchMidX) / App.S;
 				App.view.pan[1] -= (newMidY - pinchMidY) / App.S;
+				viewDirty = true;
 				App.requestRender();
-				if (App.overlay.on) App.invalidateOverlay();
 			}
 			pinchDist = newDist; pinchMidX = newMidX; pinchMidY = newMidY;
 			return;
@@ -403,8 +499,8 @@
 			App.view.pan[0] += dxb / App.S;
 			App.view.pan[1] -= dyb / App.S;
 			lastPx = e.clientX; lastPy = e.clientY;
+			viewDirty = true;
 			App.requestRender();
-			if (App.overlay.on) App.invalidateOverlay();
 		} else if (pendingGear !== null && pointers.size === 1) {
 			if (Math.hypot(e.clientX - pendingX, e.clientY - pendingY) > TAP_PX) {
 				panning = true; lastPx = e.clientX; lastPy = e.clientY; pendingGear = null;
@@ -426,13 +522,25 @@
 			lastPx = rem.x; lastPy = rem.y;
 		} else if (pointers.size === 0) {
 			panning = false; pendingGear = null;
+			// gesture over: re-bake the overlay once at the settled view instead
+			// of re-baking on every move/wheel event during the gesture.
+			if (viewDirty) {
+				if (App.overlay.on) App.invalidateOverlay();
+				viewDirty = false;
+			}
 		}
 	}
 
 	function onCancel(e) {
 		pointers.delete(e.pointerId);
 		if (pointers.size < 2) pinchDist = 0;
-		if (pointers.size === 0) { panning = false; pendingGear = null; }
+		if (pointers.size === 0) {
+			panning = false; pendingGear = null;
+			if (viewDirty) {
+				if (App.overlay.on) App.invalidateOverlay();
+				viewDirty = false;
+			}
+		}
 		else if (pointers.size === 1) {
 			panning = true;
 			var rem = pointers.values().next().value;
@@ -446,8 +554,17 @@
 		var xb = (e.clientX - rect.left) * App.dpr;
 		var yb = (e.clientY - rect.top) * App.dpr;
 		zoomAbout(xb, yb, Math.exp(-e.deltaY * 0.0015));
+		viewDirty = true;
+		// wheel has no native end event: keep the gesture-bypass active for a
+		// short quiet period after the last tick, then re-bake the overlay once.
+		wheelActive = true;
+		if (wheelTimer) clearTimeout(wheelTimer);
+		wheelTimer = setTimeout(function () {
+			wheelTimer = 0;
+			wheelActive = false;
+			if (App.overlay.on) App.invalidateOverlay();
+		}, 150);
 		App.requestRender();
-		if (App.overlay.on) App.invalidateOverlay();
 	}
 
 	function onKey(e) {
@@ -467,35 +584,151 @@
 	}
 
 	// ---- render loop ----
+	// Draw ring segments [startK, endK] in ring order. Hot path shared by the
+	// overlay bake, the overlay-off fallback and the gesture direct-draw: hoisted
+	// R.* locals, pre-loaded first pair, running ring index (no % per step).
+	// Round join discs (72 verts each, ~92 % of a full rebake's vertex count)
+	// are drawn ONLY where a segment turns sharply enough for the corner notch
+	// (radius `half`) to be visible: sin(turn) * half > 1.2 px. Dense traces
+	// never trigger it; sparse thick traces keep their rounded joins.
 	function drawGearSegments(g, startK, endK, half) {
+		var ring = g.ring;
+		var cap = Gear.CAP;
+		var head = g.head;
+		var n = g.count - 1;
+		var s = Math.max(0, startK), e = Math.min(endK, n);
+		if (e <= s) return;
+
+		var panX = App.view.pan[0], panY = App.view.pan[1];
+		var S = App.S, cx0 = App.cx0, cy0 = App.cy0;
+
+		var idxA = head + s, idxB = head + s + 1;
+		if (idxA >= cap) idxA -= cap;
+		if (idxB >= cap) idxB -= cap;
+		var ax = ring[idxA * 5],     ay = ring[idxA * 5 + 1];
+		var bx = ring[idxB * 5],     by = ring[idxB * 5 + 1];
+		var ar = ring[idxA * 5 + 2], ag = ring[idxA * 5 + 3], ab = ring[idxA * 5 + 4];
+		var br = ring[idxB * 5 + 2], bg = ring[idxB * 5 + 3], bb = ring[idxB * 5 + 4];
+
+		// previous segment direction (unnormalized) for the join test. no sqrt:
+		// sin(turn)^2 * len^2 * plen^2 > (1.2 px)^2  <=>  sin(turn)*half > 1.2 px.
+		var pdx = 0, pdy = 0, pLen2 = 0, havePrev = false;
+		var thr2 = half >= 1.0 ? 1.44 / (half * half) : Infinity;
+
+		for (var k = s; k < e; k++) {
+			var s0x = cx0 + (ax + panX) * S;
+			var s0y = cy0 - (ay + panY) * S;
+			var s1x = cx0 + (bx + panX) * S;
+			var s1y = cy0 - (by + panY) * S;
+
+			Rseg(s0x, s0y, s1x, s1y, half, ar, ag, ab, br, bg, bb, 1);
+
+			// join disc at this segment's start point, only on sharp turns.
+			if (havePrev) {
+				var dx = bx - ax, dy = by - ay;
+				var cross = dx * pdy - dy * pdx;
+				var len2 = dx * dx + dy * dy;
+				if (cross * cross > len2 * pLen2 * thr2) Rdot(s0x, s0y, half, ar, ag, ab, 1);
+				pdx = dx; pdy = dy; pLen2 = len2;
+			} else {
+				pdx = bx - ax; pdy = by - ay; pLen2 = pdx * pdx + pdy * pdy;
+				havePrev = true;
+			}
+
+			// chunked flush: bound every draw to MAXVERT so a full CAP ring never
+			// overflows/drops (drawn across several flushes). headroom covers one
+			// segment + one join disc.
+			if (RvCount() > RmaxVert - 200) Rflush();
+
+			ax = bx; ay = by;
+			ar = br; ag = bg; ab = bb;
+			idxA = idxB;
+			if (++idxB >= cap) idxB = 0;
+			bx = ring[idxB * 5]; by = ring[idxB * 5 + 1];
+			br = ring[idxB * 5 + 2]; bg = ring[idxB * 5 + 3]; bb = ring[idxB * 5 + 4];
+		}
+
+		// round cap disc at the final endpoint so the tip is rounded.
+		if (half >= 1.0 && e > s) {
+			var ex = cx0 + (ax + panX) * S;
+			var ey = cy0 - (ay + panY) * S;
+			Rdot(ex, ey, half, ar, ag, ab, 1);
+		}
+	}
+
+	// gesture-only path: merge `step` consecutive points per segment so the trace
+	// stays continuous at reduced vertex count while the user pans/zooms. quality
+	// is restored by the full overlay re-bake on gesture end.
+	function drawGearSegmentsDecimated(g, half, perGearBudget) {
 		var n = g.count - 1;
 		if (n <= 0) return;
-		var s = Math.max(0, startK), e = Math.min(endK, n);
-		for (var k = s; k < e; k++) {
-			var ia = (g.head + k) % Gear.CAP, ib = (g.head + k + 1) % Gear.CAP;
-			var ax = g.ring[ia * 5], ay = g.ring[ia * 5 + 1];
-			var bx = g.ring[ib * 5], by = g.ring[ib * 5 + 1];
-			var s0x = App.cx0 + (ax + App.view.pan[0]) * App.S;
-			var s0y = App.cy0 - (ay + App.view.pan[1]) * App.S;
-			var s1x = App.cx0 + (bx + App.view.pan[0]) * App.S;
-			var s1y = App.cy0 - (by + App.view.pan[1]) * App.S;
-			R.seg(s0x, s0y, s1x, s1y, half,
-				g.ring[ia * 5 + 2], g.ring[ia * 5 + 3], g.ring[ia * 5 + 4],
-				g.ring[ib * 5 + 2], g.ring[ib * 5 + 3], g.ring[ib * 5 + 4], 1);
-			// round join disc at this segment's start point (per-point colour).
-			if (half >= 1.0) R.dot(s0x, s0y, half, g.ring[ia * 5 + 2], g.ring[ia * 5 + 3], g.ring[ia * 5 + 4], 1);
-			// chunked flush: bound every draw to MAXVERT so a full CAP ring never
-			// overflows/drops (drawn across several flushes).
-			if (R.vCount() > R.maxVert - 200) R.flush();
+		var step = Math.max(1, Math.ceil(n / Math.max(1, perGearBudget)));
+		if (step <= 1) { drawGearSegments(g, 0, n, half); return; }
+		var cap = Gear.CAP, head = g.head, ring = g.ring;
+		var panX = App.view.pan[0], panY = App.view.pan[1];
+		var S = App.S, cx0 = App.cx0, cy0 = App.cy0;
+		var lastIa = -1;
+		for (var k = 0; k < n; k += step) {
+			var end = Math.min(k + step, n);
+			var ia = head + k;   if (ia >= cap) ia -= cap;
+			var ib = head + end; if (ib >= cap) ib -= cap;
+			var s0x = cx0 + (ring[ia * 5] + panX) * S;
+			var s0y = cy0 - (ring[ia * 5 + 1] + panY) * S;
+			var s1x = cx0 + (ring[ib * 5] + panX) * S;
+			var s1y = cy0 - (ring[ib * 5 + 1] + panY) * S;
+			Rseg(s0x, s0y, s1x, s1y, half,
+				ring[ia * 5 + 2], ring[ia * 5 + 3], ring[ia * 5 + 4],
+				ring[ib * 5 + 2], ring[ib * 5 + 3], ring[ib * 5 + 4], 1);
+			if (RvCount() > RmaxVert - 200) Rflush();
+			lastIa = ib;
 		}
-		// round cap disc at the final endpoint so the tip is rounded (no segment
-		// is drawn past the last valid ring slot).
-		if (half >= 1.0 && e > s) {
-			var ie = (g.head + e) % Gear.CAP;
-			var ex = App.cx0 + (g.ring[ie * 5] + App.view.pan[0]) * App.S;
-			var ey = App.cy0 - (g.ring[ie * 5 + 1] + App.view.pan[1]) * App.S;
-			R.dot(ex, ey, half, g.ring[ie * 5 + 2], g.ring[ie * 5 + 3], g.ring[ie * 5 + 4], 1);
+		// end-cap disc at the last drawn point (keeps tip rounded under decimation)
+		if (half >= 1.0 && lastIa >= 0) {
+			var ex = cx0 + (ring[lastIa * 5] + panX) * S;
+			var ey = cy0 - (ring[lastIa * 5 + 1] + panY) * S;
+			Rdot(ex, ey, half, ring[lastIa * 5 + 2], ring[lastIa * 5 + 3], ring[lastIa * 5 + 4], 1);
 		}
+	}
+
+	// one-time benchmark at init: find the largest ring size this device can
+	// push through the exact gesture draw path inside GESTURE_FRAME_SLICE_MS.
+	// scenes above the resulting budget are decimated only during gestures.
+	function tuneGestureBudget() {
+		if (typeof window.SPIRO_GESTURE_SEG_BUDGET === 'number') {
+			GESTURE_SEG_BUDGET = Math.max(1000, window.SPIRO_GESTURE_SEG_BUDGET | 0);
+			return;
+		}
+		// synthetic ring laid out like a real gear ring (xy rgb per point),
+		// smooth enough that no join discs fire during the measurement.
+		var TEST_CAP = 200000;
+		var testRing = new Float32Array(TEST_CAP * 5);
+		for (var i = 0; i < TEST_CAP; i++) {
+			var t = i / TEST_CAP;
+			testRing[i * 5]     = Math.cos(t * 200) * 2;
+			testRing[i * 5 + 1] = Math.sin(t * 137) * 2;
+			testRing[i * 5 + 2] = 0.5 + 0.5 * Math.cos(t);
+			testRing[i * 5 + 3] = 0.5 + 0.5 * Math.sin(t);
+			testRing[i * 5 + 4] = 0.8;
+		}
+		var fakeGear = { ring: testRing, head: 0, count: 0 };
+		var samples = [8000, 16000, 32000, 64000, 96000, 128000, 160000, 200000];
+		var bestUnder = 10000;   // floor: below this the decimated trace looks sparse
+		var MAX_SAFE = Math.floor(RmaxVert / 6) - 16;   // leave headroom for flush
+		for (var si = 0; si < samples.length; si++) {
+			var n = samples[si];
+			if (n > MAX_SAFE) n = MAX_SAFE;
+			fakeGear.count = n + 1;
+			R.begin(BG);
+			var t0 = performance.now();
+			for (var rep = 0; rep < 4; rep++) {
+				drawGearSegments(fakeGear, 0, n, 1.5 * App.dpr);
+				Rflush();
+			}
+			var perFrame = (performance.now() - t0) / 4;
+			if (perFrame <= GESTURE_FRAME_SLICE_MS) bestUnder = n;
+			else break;
+		}
+		GESTURE_SEG_BUDGET = bestUnder;
 	}
 
 	// gear skeleton: draws circles and/or dial hands depending on the
@@ -595,6 +828,30 @@
 			if (App.showPoints) drawPenPoints();
 			return;
 		}
+		if (isGestureActive()) {               // gesture: draw ring directly at live view
+			R.begin(BG);
+			var pencilGears = 0, totalSegs = 0;
+			for (var gi = 0; gi < App.allGears.length; gi++) {
+				var gg = App.allGears[gi];
+				if (!(gg.pencil.c1.on || gg.pencil.c2.on)) continue;
+				pencilGears++;
+				totalSegs += Math.max(0, gg.count - 1);
+			}
+			var decimate = totalSegs > GESTURE_SEG_BUDGET;
+			var perGearBudget = Math.max(1, Math.floor(GESTURE_SEG_BUDGET / Math.max(1, pencilGears)));
+			for (var gi = 0; gi < App.allGears.length; gi++) {
+				var gg = App.allGears[gi];
+				if (!(gg.pencil.c1.on || gg.pencil.c2.on)) continue;
+				var half = Math.max(0.5, (gg.pencil.width / 2) * App.dpr);
+				if (decimate) drawGearSegmentsDecimated(gg, half, perGearBudget);
+				else drawGearSegments(gg, 0, gg.count - 1, half);
+				R.flush();
+			}
+			drawGearOverlay();
+			R.flush();
+			if (App.showPoints) drawPenPoints();
+			return;
+		}
 		if (App.overlay.on) {
 			R.overlay.bind();
 			if (App.overlay.invalid) {
@@ -605,6 +862,7 @@
 				}
 				App.overlay.invalid = false;
 				bakeOverlay(true);
+				viewDirty = false;   // overlay now matches the settled view
 			} else {
 				bakeOverlay(false);
 			}
@@ -644,8 +902,10 @@
 						if (col) Gear.pushPoint(g, g.penx, g.peny, col);
 					}
 				}
+				App.needsRender = true;
 			}
-			App.needsRender = true;
+			// whole mode is static once baked: render only on invalidation
+			// (scene edits, view changes, overlay toggles), never per frame.
 		}
 		if (App.needsRender) { renderScene(); App.needsRender = false; }
 		requestAnimationFrame(frame);
@@ -656,7 +916,13 @@
 		try { R.init(App.canvas); }
 		catch (e) { document.body.innerHTML = '<p style="color:#fff;padding:20px">WebGL2 error: ' + e.message + '</p>'; return; }
 
-		// restore autosave or default
+		// one-time auto-tune of the gesture-draw segment budget to this device.
+		// runs before the first scene is loaded / painted, so the synthetic
+		// benchmark draws are invisible (blank canvas).
+		tuneGestureBudget();
+
+		// restore autosave, else default.js (SETTINGS module next to index.html),
+		// else the built-in default scene.
 		var restored = null;
 		try {
 			var raw = localStorage.getItem(STORE_KEY);
@@ -667,11 +933,24 @@
 			App.roots = restored.roots;
 			App.view = restored.view;
 			App.globalSpeed = restored.globalSpeed;
+			App.colorMode = colorModeFromScene(restored);
+		} else if (window.SETTINGS && window.SETTINGS.gears && window.SETTINGS.gears.length) {
+			try {
+				var d = Gear.deserialize(window.SETTINGS);
+				App.roots = d.roots;
+				App.view = d.view;
+				App.globalSpeed = d.globalSpeed;
+				App.colorMode = colorModeFromScene(d);
+			} catch (e2) {
+				App.roots = Gear.defaultScene();
+				for (var i = 0; i < App.roots.length; i++) Gear.initRuntime(App.roots[i], null);
+			}
 		} else {
 			App.roots = Gear.defaultScene();
 			for (var i = 0; i < App.roots.length; i++) Gear.initRuntime(App.roots[i], null);
 		}
 		rebuildAll();
+		applyColorMode();
 
 		GUI.init(App);
 		GUI.setAutosave(App.autosaveOK);

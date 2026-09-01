@@ -1,5 +1,31 @@
 # CHANGELOG
 
+## 0.4.0
+- pan/zoom stays 60+ FPS in both modes with a visible trail: pointer/wheel
+  gestures draw the ring directly at the live view transform (no per-frame FBO
+  rebake); the overlay re-bakes once on gesture release. wheel zoom gets a
+  150ms "wheel-end" debounce instead of a per-tick rebake.
+- gesture draw is auto-tuned per device: a one-time init benchmark measures the
+  largest ring the device can push in an 8ms slice; scenes above it are
+  decimated (points merged per segment) only while a gesture is active, full
+  quality restored on release. override with `window.SPIRO_GESTURE_SEG_BUDGET`.
+- hot loop rewritten: hoisted renderer refs, running ring index (no `%` per
+  step), pre-loaded first pair. per-segment round-join discs (72 verts each,
+  ~92% of a rebake's vertex count) replaced by turn-gated discs — only drawn
+  when `sin(turn) * half > 1.2px`, so dense traces keep the vertex win while
+  sparse thick traces keep rounded joins. end-cap dot kept.
+- whole mode is idle-stable: the finished figure is no longer re-rendered every
+  frame; rendering happens only on invalidation (edits, view, toggles).
+- color animation mode (cycles/frequency) is now a single GLOBAL toggle in the
+  panel: auto-defaults to 'frequency' in animate mode and 'cycles' in whole
+  mode, user-overridable at any time; the per-pencil toggle in the context
+  menu is removed (the per-pencil speed slider stays). scene files carry a
+  top-level `colorMode`; legacy files derive it from the pencils.
+- save/load reworked: "save (d)" writes `spirograph.js` — a node-friendly
+  SETTINGS module — instead of json; "open (o)" and "paste (p)" accept both
+  .js and legacy .json. a `default.js` next to index.html (shipped example
+  included) loads as the startup scene when there is no autosave.
+
 ## 0.3.2
 - per-pencil cycles/frequency toggle now auto-tracks the global mode:
   switching to Animate sets every pencil's animMode to 'frequency' (hue/sec,

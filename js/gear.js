@@ -430,11 +430,12 @@
 		return g;
 	}
 
-	function serialize(roots, view, globalSpeed) {
+	function serialize(roots, view, globalSpeed, colorMode) {
 		return {
 			gears: roots.map(serializeGear),
 			view: { zoom: view.zoom, pan: [view.pan[0], view.pan[1]] },
-			globalSpeed: globalSpeed
+			globalSpeed: globalSpeed,
+			colorMode: colorMode || 'frequency'
 		};
 	}
 
@@ -446,8 +447,9 @@
 			if (obj.view.pan) view.pan = [obj.view.pan[0] || 0, obj.view.pan[1] || 0];
 		}
 		var gs = obj.globalSpeed != null ? obj.globalSpeed : 1;
+		var cm = (obj.colorMode === 'cycles' || obj.colorMode === 'frequency') ? obj.colorMode : 'frequency';
 		for (var i = 0; i < roots.length; i++) initRuntime(roots[i], null);
-		return { roots: roots, view: view, globalSpeed: gs };
+		return { roots: roots, view: view, globalSpeed: gs, colorMode: cm };
 	}
 
 	var Gear = {

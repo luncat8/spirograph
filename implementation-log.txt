@@ -28,11 +28,6 @@
     does targeted update only
   - gui.js: "raster overlay" checkbox + GUI.setOverlay
 
-## next
-- optional: line-join rounding (miter/bevel) for very thick lines
-- optional: more export options (png of canvas)
-- optional: per-gear overlay toggle
-
 ## done
 - mixHue follows the direction the user asked for (signed delta c1.h -> c2.h),
   not the long or short arc — swapping c1/c2 reverses the trace. t already
@@ -97,3 +92,42 @@
 - points mode: R glow pass (glowBegin/Point/Flush); frame gate + renderScene early return
 - validated: node --check on all four js files; period math (default=1100 turns, speed=1
   internal child=11 turns) and closure gap=0 confirmed under node.
+
+## done (0.4.0) — plan 03-performance-refactoring-plan.md implemented
+- gesture-bypass FBO: while panning / pinching / wheel-zooming, renderScene draws
+  the ring directly to screen at the live view transform (per-gear flush); the
+  overlay FBO re-bakes ONCE on gesture end (onUp/onCancel when viewDirty, or the
+  150ms wheel debounce). per-event App.invalidateOverlay() removed from
+  onMove/onWheel. viewDirty cleared when the overlay rebakes at the settled view.
+- auto-tuned decimation: tuneGestureBudget() benchmarks drawGearSegments at init
+  (8k..200k synthetic segments, 8ms slice, floor 10k; override
+  window.SPIRO_GESTURE_SEG_BUDGET). gestures with totalSegs > budget use
+  drawGearSegmentsDecimated (merge `step` points per segment, end-cap kept).
+- drawGearSegments rewrite: hoisted Rseg/Rflush/Rdot/RvCount/RmaxVert +
+  view/transform locals, pre-loaded first pair, running ring index (no % per
+  step). per-segment R.dot removed; turn-gated join disc
+  (cross^2 > len^2*plen^2*thr2, thr = 1.2px/half, sqrt-free) + end-cap dot.
+  flush headroom 200 (one seg + one disc).
+- whole mode idle: frame() no longer forces needsRender in whole mode -> 0
+  renders/s once baked; renders only on invalidation.
+- global color mode: App.colorMode + setColorMode; panel 'color mode' buttons
+  (cycles/frequency); per-pencil context-menu toggle REMOVED (slider prefix
+  follows global mode); setMode auto-applies mode default; loadObject/init
+  derive colorMode from legacy files (explicit field > pencil consensus >
+  mode default); gear.js serialize/deserialize carry colorMode.
+- JS scene files: downloadScene writes spirograph.js (SETTINGS IIFE, node +
+  browser); loadSceneText accepts json or js (throwaway <script> eval reads
+  window.SETTINGS); index.html loads default.js; init falls back to
+  window.SETTINGS (no autosave) then Gear.defaultScene(); default.js shipped at
+  repo root (scene previously committed as js/default.js, wrapped in the
+  SETTINGS module; raw js/default.js removed).
+- validated: node --check all js; node shim harness (DOM/WebGL stubs) boots the
+  real app: init, default.js startup, frames, pan/wheel/pinch/keyboard, gesture
+  direct-draw + release rebake, decimation engages under a small budget; node
+  unit harness extracts real drawGearSegments/Decimated and asserts endpoints,
+  colors, join/end-cap gating, ring wraps (head=CAP-2), partial/single/empty
+  ranges, decimation merging; gear.js roundtrip + recolorWhole==computeWhole.
+
+## next
+- optional: chunked post-gesture overlay rebake if the release hitch ever
+  measures perceptible; world-space FBO for >zoom-1 quality bounds.

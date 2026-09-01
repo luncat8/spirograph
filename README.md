@@ -11,8 +11,12 @@ draw hypotrochoid / epitrochoid curves in the browser. no build step.
 	per-gear: internal/external, speed -1..1, diameter, pencil offset d, width,
 	  two color slots (each with its own enable checkbox) -> 0 colors = no pencil,
 	  1 color = static, 2 colors = animated blend between them
+	  global cycles/frequency color mode (auto per trace mode, user-overridable)
 	zoom / pan, pause, clear, reset to default scene
-	save / load scene as json (file or clipboard), autosave to localStorage
+	save scene as a .js file (rename to default.js for startup scene) / load
+	  .js or legacy .json (file or clipboard), autosave to localStorage
+	60+ FPS pan/zoom in both modes: direct-draw during gestures, one overlay
+	  re-bake on release, auto-tuned decimation on weak GPUs
 	zero dependencies, WebGL2, runs from file://
 
 
@@ -122,59 +126,20 @@ color1-color2 is not same as color2-color1. and it should not do whole hue wheel
 
 ### TODO
 
-read
-README.md
+plan + status: 03-performance-refactoring-plan.md (implemented, see CHANGELOG 0.4.0)
 
-review plan and improve if need
-03-performance-refactoring-plan.md
-
-1
-review implemented:
-```change anim speed slider should cause rebuild in mode whole. optimize if possible to not recalculate all but change color```
-
-currently it has render performance issue while user do Pan/zoom. user prefer it 60+FPS in both animate and whole mode
-
-2.
-whole mode should not recreate whole image every frame after done if no changes.
-
-we had toggle switch 
-rasterized draw FBO - fast inpaint only last segments. do not keep geometry of already drawn segments at all, only texture.
-and 
-'keep geometry' - rebuild geometry on geometry settings change. if color change rebuild only color (possible change color of already drawn). if zoom change more then 20% - render already existing geometry. if pan changed - just pan cached image
-at commit 88de92be9915a59441c1c95c93276ff3b8348c56
-but somehow this functionality lost. sure this is LLM hallucination.
-need to investigate.
-
-3.
-cycles/frequency of pencil color change
-is currently 'anim speed' cycles/frequency implemented properly?
-
-for best uix behavior optional
-animate mode toggle it to frequency (color change speed, like hue per tick)
-Whole mode toggle it to number of hue cycles 
-user also can manually toggle
-
-remove per-pencil toggle of cycles/frequency. it is just place for slider. but it should toggle all globally.
-
-
-4.
-improve save/load to file
-save file as js, but not json. and load 'default.js' at startup.
-example from other project
-
-(function (root) {
-var S = {
-"version": 1,
-"current": {
-	"count": 50000,
-}
-};
-if (typeof module !== 'undefined' && module.exports) module.exports = S;
-else root.SETTINGS = S;
-})(typeof window !== 'undefined' ? window : globalThis);
-
-
-5. implement
+1. done — anim-speed slider in whole mode rebuilds via color-only re-bake
+   (`Gear.recolorWhole` walks the existing ring, no geometry resample).
+2. done — pan/zoom stays 60+ FPS in both modes: while a gesture is active the
+   ring is drawn directly at the live view transform (auto-tuned decimation on
+   weak GPUs); the raster overlay FBO re-bakes once on gesture end. whole mode
+   renders 0 frames when idle (no per-frame re-render of the finished figure).
+3. done — color animation mode is a single global toggle in the panel
+   (auto: 'frequency' in animate, 'cycles' in whole; user-overridable). the
+   per-pencil cycles/frequency toggle is removed; the per-pencil slider stays.
+4. done — save writes a .js scene module (SETTINGS IIFE, node-compatible);
+   load accepts .js and legacy .json; `default.js` next to index.html loads at
+   startup when there is no autosave (shipped example included).
 
 
 ### dependencies
@@ -202,8 +167,8 @@ modern browser with WebGL2 support
 	c - clear canvas
 	x - reset objects to default scene + view transform
 	s - copy scene model (gears, view) json to clipboard
-	d - download scene model as json
-	o - load scene model from file
+	d - download scene model as .js file (rename to default.js for startup scene)
+	o - load scene model from file (.js or legacy .json)
 	p - load scene model from clipboard
 ### state
 
@@ -213,7 +178,10 @@ if localStorage failed - should be 'autosave unavailable' label near save button
 
 ### scene format
 
-json saved/loaded by s / d / o / p. colors are hex strings in json, parsed to rgb floats internally for webgl, example:
+scene saved/loaded by s / d / o / p: clipboard uses json; the file format (d)
+wraps the same object in a SETTINGS js module so a saved scene can be renamed to
+`default.js` and become the startup scene. legacy .json files still load.
+colors are hex strings, parsed to rgb floats internally for webgl, example:
 
 	{
 	  "gears": [ { "r": 0.6, "speed": 0.2, "internal": false,
@@ -222,7 +190,9 @@ json saved/loaded by s / d / o / p. colors are hex strings in json, parsed to rg
 	                           "c2": { "on": false, "color": "#0000ff" },
 	                           "animSpeed": 0.1 },
 	               "children": [] } ],
-	  "view": { "zoom": 1, "pan": [0, 0] }
+	  "view": { "zoom": 1, "pan": [0, 0] },
+	  "globalSpeed": 1,
+	  "colorMode": "frequency"
 	}
 
 
@@ -231,9 +201,11 @@ json saved/loaded by s / d / o / p. colors are hex strings in json, parsed to rg
 	README.md - this file
 	AGENTS.md - guidance for LLM agents
 	index.html - entry point (classic <script> tags, no build)
+	default.js - startup scene (SETTINGS module; replace to change the default)
 	implementation-log.txt - what is already done and next step for LLM agents
 	findings-pitfalls-skills.md - notes for LLM agents
 	CHANGELOG.md - short release notes
+	03-performance-refactoring-plan.md - pan/zoom perf plan (implemented)
 	js/main.js - init, loop
 	js/gear.js - gear math
 	js/render.js - webgl2 line drawing (shaders, buffers, MSAA)

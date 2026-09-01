@@ -11,11 +11,10 @@
 	var currentGear = null;
 	var pauseBtn = null;
 	var modeBtns = {};
+	var colorModeBtns = {};
 	var periodLine = null;
-	// references into the open per-gear menu so refreshAnimMode() can sync the
-	// cycles/frequency toggle + slider prefix after App.setMode auto-switches
-	// animMode on every pencil.
-	var speedRowModeBtns = null;
+	// reference into the open per-gear menu so refreshAnimMode() can relabel the
+	// anim-speed slider prefix after the global color mode changes.
 	var speedLabRefresh = null;
 
 	function el(tag, cls, txt) {
@@ -127,6 +126,19 @@
 		modeBtn('Whole', 'whole');
 		panel.appendChild(modeWrap);
 
+		// color animation mode is GLOBAL (applies to every pencil). auto-switches
+		// with the trace mode (frequency in animate, cycles in whole) but the
+		// user can override at any time.
+		panel.appendChild(el('div', 'sub', 'color mode'));
+		var cmWrap = el('div', 'btns');
+		function colorModeBtn(label, m) {
+			var b = buttonRow(label, function () { app.setColorMode(m); });
+			colorModeBtns[m] = b; cmWrap.appendChild(b);
+		}
+		colorModeBtn('cycles', 'cycles');
+		colorModeBtn('frequency', 'frequency');
+		panel.appendChild(cmWrap);
+
 		periodLine = el('div', 'sub', '');
 		periodLine.style.display = 'none';
 		panel.appendChild(periodLine);
@@ -161,6 +173,7 @@
 		panel.appendChild(help);
 
 		GUI.setMode(app.mode);
+		GUI.setColorMode(app.colorMode || 'frequency');
 	}
 
 	function setPaused(p) {
@@ -207,31 +220,17 @@
 			function (v) { gear.pencil.c2.on = v; app.onGearParam(gear, 'color'); },
 			function (v) { gear.pencil.c2.color = v; app.onGearParam(gear, 'color'); }));
 
-		var modeWrap = el('div', 'btns');
-		var cyclesBtn = buttonRow('cycles', function () { setModeBtn('cycles'); });
-		var freqBtn = buttonRow('frequency', function () { setModeBtn('frequency'); });
-		var animBtns = { cycles: cyclesBtn, frequency: freqBtn };
-		speedRowModeBtns = animBtns;
-		modeWrap.appendChild(cyclesBtn);
-		modeWrap.appendChild(freqBtn);
-		menu.appendChild(modeWrap);
-
 		var speedRow = sliderRow('speed', 0, 4, 0.01, gear.pencil.animSpeed, function (v) {
 			gear.pencil.animSpeed = v; app.onGearParam(gear, 'color');
 		});
 		var speedLab = speedRow.firstChild;
-		// in whole mode both formulas use the same slider value (hue cycles per
-		// closed period), so the prefix is identical regardless of animMode.
+		// prefix follows the GLOBAL color mode (cycles/frequency panel toggle).
+		// in whole mode both formulas share the same slider value (hue cycles per
+		// closed period), so the prefix is identical regardless of color mode.
 		speedLabRefresh = function () {
-			speedLab.firstChild.nodeValue = app.mode === 'whole' ? 'hue cycles ' : (gear.pencil.animMode === 'frequency' ? 'hue/sec ' : 'cycles ');
+			var cm = app.colorMode || 'frequency';
+			speedLab.firstChild.nodeValue = app.mode === 'whole' ? 'hue cycles ' : (cm === 'frequency' ? 'hue/sec ' : 'cycles ');
 		};
-		for (var k in animBtns) animBtns[k].classList.toggle('active', k === (gear.pencil.animMode || 'cycles'));
-		function setModeBtn(m) {
-			gear.pencil.animMode = m;
-			for (var k in animBtns) animBtns[k].classList.toggle('active', k === m);
-			speedLabRefresh();
-			app.onGearParam(gear, 'color');
-		}
 		speedLabRefresh();
 		menu.appendChild(speedRow);
 
@@ -256,7 +255,6 @@
 	function closeMenu() {
 		menu.classList.add('hidden');
 		currentGear = null;
-		speedRowModeBtns = null;
 		speedLabRefresh = null;
 	}
 
@@ -273,18 +271,17 @@
 			for (var key in modeBtns) modeBtns[key].classList.toggle('active', key === m);
 			if (periodLine) periodLine.style.display = (m === 'whole') ? '' : 'none';
 		},
+		setColorMode: function (m) {
+			for (var key in colorModeBtns) colorModeBtns[key].classList.toggle('active', key === m);
+		},
 		setPeriod: function (turns, capped) {
 			if (!periodLine) return;
 			periodLine.textContent = 'period: ' + turns + ' turn' + (turns === 1 ? '' : 's') + (capped ? ' (capped)' : '');
 		},
-		// sync the per-pencil cycles/frequency toggle + slider prefix to the
-		// pencil's current animMode (after App.setMode auto-switched them).
+		// relabel the open menu's anim-speed slider prefix (color mode or trace
+		// mode changed while the menu is open).
 		refreshAnimMode: function () {
 			if (!currentGear) return;
-			var p = currentGear.pencil;
-			var m = p.animMode || 'cycles';
-			var btns = speedRowModeBtns;
-			if (btns) for (var k in btns) btns[k].classList.toggle('active', k === m);
 			if (speedLabRefresh) speedLabRefresh();
 		}
 	};
