@@ -51,6 +51,8 @@
 		backdrop-filter: blur(6px); box-shadow: 0 10px 40px #000a;
 	}
 	#ctxmenu.hidden { display: none; }
+	#ctxmenu .drag { cursor: grab; }
+	#ctxmenu .drag:active { cursor: grabbing; }
 	#toast {
 		position: fixed; z-index: 30; bottom: 18px; left: 50%; transform: translateX(-50%);
 		padding: 8px 14px; border-radius: 8px; background: #1d2940ee; border: 1px solid #2e3d59;

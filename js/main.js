@@ -464,7 +464,11 @@
 		if (pointers.size === 1) {
 			var g = hitGear(xb, yb);
 			if (e.pointerType === 'mouse') {
-				if (g) GUI.openMenu(g, e.clientX, e.clientY);
+				// middle button is reserved for pan; never opens the menu.
+				if (e.button === 1) {
+					pendingGear = null;
+					panning = true; lastPx = e.clientX; lastPy = e.clientY; App.requestRender();
+				} else if (g) GUI.openMenu(g, e.clientX, e.clientY);
 				else { GUI.closeMenu(); panning = true; lastPx = e.clientX; lastPy = e.clientY; App.requestRender(); }
 			} else {
 				if (g) { pendingGear = g; pendingX = e.clientX; pendingY = e.clientY; }
@@ -963,6 +967,8 @@
 		window.addEventListener('pointerup', onUp);
 		App.canvas.addEventListener('pointercancel', onCancel);
 		App.canvas.addEventListener('wheel', onWheel, { passive: false });
+		App.canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+		App.canvas.addEventListener('auxclick', function (e) { if (e.button !== 0) e.preventDefault(); });
 		window.addEventListener('keydown', onKey);
 		window.addEventListener('beforeunload', saveLocal);
 

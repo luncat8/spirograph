@@ -187,10 +187,39 @@
 		autosaveLabel.className = ok ? 'auto' : 'auto bad';
 	}
 
+	function attachDragHandle(handle, target) {
+		var pid = null, offX = 0, offY = 0;
+		function down(e) {
+			pid = e.pointerId;
+			var r = target.getBoundingClientRect();
+			offX = e.clientX - r.left;
+			offY = e.clientY - r.top;
+			handle.setPointerCapture(pid);
+			e.stopPropagation();
+			e.preventDefault();
+		}
+		function move(e) {
+			if (e.pointerId !== pid) return;
+			var x = Math.max(8, Math.min(window.innerWidth - 40, e.clientX - offX));
+			var y = Math.max(8, Math.min(window.innerHeight - 24, e.clientY - offY));
+			target.style.left = x + 'px';
+			target.style.top = y + 'px';
+		}
+		function up(e) { if (e.pointerId === pid) pid = null; }
+		handle.addEventListener('pointerdown', down);
+		handle.addEventListener('pointermove', move);
+		handle.addEventListener('pointerup', up);
+		handle.addEventListener('pointercancel', up);
+	}
+
 	function openMenu(gear, clientX, clientY) {
 		currentGear = gear;
 		menu.innerHTML = '';
-		menu.appendChild(el('div', 'ptitle', gear.parent ? 'Gear' : 'Main gear'));
+		var title = el('div', 'ptitle drag');
+		title.appendChild(document.createTextNode(gear.parent ? 'Gear ' : 'Main gear '));
+		title.appendChild(document.createTextNode('\u2725 '));
+		attachDragHandle(title, menu);
+		menu.appendChild(title);
 
 		menu.appendChild(checkboxRow('internal (roll inside parent)', gear.internal, function (v) {
 			gear.internal = v; app.onGearParam(gear, 'geom');

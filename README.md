@@ -83,7 +83,9 @@ from this menu user can:
 	place sub-gear
 	remove this gear (and its children)
 
+drag context menu using pointer. move by drag caption 'gear' label with unicode ico ✥ near it
 
+middle mouse pan
 
 ### simulation
 
