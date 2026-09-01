@@ -1,0 +1,99 @@
+# implementation log
+
+## done
+- project scaffolded, no build step, classic <script> tags, file:// friendly
+- js/gear.js: gear tree model, rolling-ratio kinematics (classic hypotrochoid /
+  epitrochoid math), serialize/deserialize, per-pencil trace ring buffer
+- js/render.js: WebGL2 analytic-AA line renderer (segment-expanded quads,
+  distance in gl_FragCoord, no MSAA FBO needed), variable width
+- js/gui.js: global panel (anim speed, clear, reset, copy/save/open/paste,
+  autosave status) + per-gear context menu (internal/external, speed, pencil
+  on/d/width/color, 2-color anim, add sub-gear, remove)
+- js/main.js: init, rAF loop, pointer zoom/pan/hit-test, keyboard shortcuts,
+  localStorage autosave, clipboard/file save-load
+- index.html: square canvas + styles, panel left for wide / top for tall windows
+
+- hot-path + raster-overlay refactor (plan 1788137193277):
+  - gear.js: cached pencil colors (slotRgb/mixOut, zero per-frame alloc), legacy
+    pencil detect fixed (!o.c1 && !o.c2), per-gear overlay state (drawn,
+    drawnNewestRing) in initRuntime/clearTrace
+  - render.js: cached uResLoc, premultiplied-alpha line FS + blendFunc
+    (ONE, ONE_MINUS_SRC_ALPHA), FBO + quad blit pipeline (R.overlay: bind/unbind/
+    clear/blitToScreen), FBO recreated on resize
+  - main.js: drawGearSegments (inline, no w2s/closure alloc) + per-gear flush in
+    both segment and overlay modes (no MAXSEG truncation); needsRender gating
+    (render only when running or dirty); markDirty -> requestRender; overlay
+    toggle ('r' key + checkbox), invalidateOverlay on pan/zoom/resize/scene edits;
+    clearTraces now repaints; hitGear picks smallest effective radius; addSubGear
+    does targeted update only
+  - gui.js: "raster overlay" checkbox + GUI.setOverlay
+
+## next
+- optional: line-join rounding (miter/bevel) for very thick lines
+- optional: more export options (png of canvas)
+- optional: per-gear overlay toggle
+
+## done
+- mixHue follows the direction the user asked for (signed delta c1.h -> c2.h),
+  not the long or short arc — swapping c1/c2 reverses the trace. t already
+  oscillates 0->1->0 via sin in pencilColor, so the trace cycles c1 -> c2 -> c1
+  along that exact direction.
+- whole mode now shares the same math: added oscT(progress, animSpeed) helper
+  (= 0.5-0.5*cos(2*pi*f), identical sine bump to pencilColor's 0.5+0.5*sin) and
+  use it in computeWhole + recolorWhole in place of the linear ramp. animSpeed
+  still scales how many forward+back cycles fit in one closed period; seam now
+  closes (t=0 at both ends), so the ring flows color1 -> color2 -> color1
+  along the same single arc as animate mode.
+- added per-pencil animMode ('frequency' | 'cycles', default 'frequency') toggle:
+  - 'cycles': 0->1->0 cosine bump (color1-color2 and back), 1 bump per 1/animSpeed
+    seconds in animate mode; cycles-per-period in whole mode (via oscT).
+  - 'frequency': sawtooth frac(time*animSpeed) - hue advances linearly then wraps
+    (hue-per-tick ramp); no continuous muddy sine.
+  Slider max raised 0->2 to 0->4 (up to 4 hue cycles). Whole mode always uses
+  the cycles arc math (its natural meaning) regardless of animMode.
+- GUI: mode is now a pair of .btn toggle buttons ('cycles' / 'frequency',
+  .active on selected) instead of a dropdown; slider prefix relabels to
+  'cycles ' / 'hue/sec '. Toggle triggers onGearParam(gear,'color').
+
+## done (0.3.2)
+- verified whole-mode anim-speed path: per-pencil "speed" slider in the context
+  menu calls `app.onGearParam(gear, 'color')` which dispatches to
+  `Gear.recolorWhole` (color-only re-bake, walks the existing ring). no phi
+  resample, no geometry change — full rebuild is reserved for 'geom'/'width'
+  kinds and structural scene edits.
+- cycles/frequency toggle auto-tracks global mode:
+  - main.js: `defaultAnimMode(mode)` returns 'frequency' for animate, 'cycles'
+    for whole. `App.setMode` writes that onto every pencil.pencil.animMode
+    before the existing recomputeWhole / clearTraces path runs.
+  - new sub-gears (`App.addSubGear`) inherit the current mode's default.
+  - gui.js: per-pencil menu now stores its cycles/frequency toggle buttons and
+    speed-label refresher on module-level refs (`speedRowModeBtns`,
+    `speedLabRefresh`); added `GUI.refreshAnimMode` so `App.setMode` can
+    resync the open menu's toggle + slider prefix after auto-switching.
+    `closeMenu` clears the refs.
+- whole-mode recolor now honors the per-pencil animMode (was always cycles):
+  - gear.js: new `wholeColorT(progress, pencil)` helper returns
+      cycles    -> oscT (0->1->0 bump, cycles per period)
+      frequency -> frac(progress*animSpeed); linear hue ramp + seamless wrap
+    `computeWhole` and `recolorWhole` both call it (single source of truth).
+  - gui.js: speed slider prefix is 'hue cycles ' in whole mode (both formulas
+    share the same slider value), 'hue/sec ' for animate/frequency,
+    'cycles ' for animate/cycles.
+- semantics: animate mode = `pencilColor(gear, time)` honors animMode
+  (cycles = 0.5-0.5*cos bump, frequency = sawtooth frac). whole mode =
+  `wholeColorT(progress, pencil)` honors animMode. switch one mode for the
+  other and the slider semantics follow.
+- validated: node --check on all four js files; recolorWhole smoke test
+  produces distinct RGB sequences for cycles/frequency at speeds 0.25/1/2
+  (cycles=1 returns to start at the seam; cycles=2 alternates; frequency=0.25
+  shows ~25% of the sweep across the ring).
+
+## done (hy3 enhancements)
+- foundation: overlay ON by default, Gear.CAP=40000, round joins (R.dot fan) + chunked flush
+- touch: pinch-zoom + one-finger pan, tap-opens-menu (Pointer Events)
+- dial overlay: App.gearStyle circles/dial; drawGearOverlay branches
+- whole mode: Gear.rationalize/detectPeriod/computeWhole; App.setMode/recomputeWhole/
+  onGearParam; GUI mode seg + period readout + speed snap; reset/load/add/remove recompute
+- points mode: R glow pass (glowBegin/Point/Flush); frame gate + renderScene early return
+- validated: node --check on all four js files; period math (default=1100 turns, speed=1
+  internal child=11 turns) and closure gap=0 confirmed under node.
