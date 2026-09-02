@@ -12,11 +12,14 @@
 	var menuX = 0, menuY = 0;
 	var pauseBtn = null;
 	var modeBtns = {};
+	var dimBtns = {};
 	var colorModeBtns = {};
 	var periodLine = null;
 	var wholeBox = null;
-	// checkbox refs so applyAppState() can sync the UI when a scene with a saved
-	// "app" state is loaded (or when the reset button restores defaults).
+	var dim3Box = null;          // 3D section (camera controls), hidden in 2D
+	var helpLine = null;
+	// checkbox refs so Settings.applyApp can sync the UI when a scene with a
+	// saved "app" state is loaded (or when the reset button restores defaults).
 	var checkboxRefs = {};
 	var sliderRefs = {};   // dit for range inputs
 	// reference into the open per-gear menu so refreshAnimMode() can relabel the
@@ -153,10 +156,39 @@
 		btns.appendChild(buttonRow('reset (x)', function () { app.resetScene(); }));
 		panel.appendChild(btns);
 
+		// dimension switch: 2D / 3D (g key). the 3D section below is shown only
+		// in 3D mode (setDim toggles it).
+		var dimWrap = el('div', 'btns');
+		function dimBtn(label, d) {
+			var b = buttonRow(label, function () { app.setDim(d); });
+			dimBtns[d] = b; dimWrap.appendChild(b);
+		}
+		dimBtn('2D', '2d');
+		dimBtn('3D', '3d');
+		panel.appendChild(dimWrap);
+
 		panel.appendChild(sliderRow('anim speed', 0, 30, 0.01, app.globalSpeed, function (v) {
 			app.globalSpeed = v;
 			app.markDirty();
 		}, null, 'globalSpeed'));
+
+		// 3D section: camera controls. the second rotation axis is PER GEAR -
+		// each gear has its own tilt speed (speed2) in its edit menu; there is
+		// no global spin. 0 on every gear reproduces the flat 2D figure.
+		dim3Box = el('div');
+		dim3Box.appendChild(el('div', 'sub', '3D'));
+		dim3Box.appendChild(el('div', 'help',
+			'Each gear spins about two axes: the in-plane speed plus a tilt speed ' +
+			'(set it in a gear menu). drag an empty area to orbit the selected gear; ' +
+			'0 tilt keeps the figure flat.'));
+		dim3Box.appendChild(checkboxRow('auto-rotate camera', !!app.autoRotate, function (v) {
+			app.setAutoRotate(v);
+		}, 'autoRotate'));
+		var cbtns = el('div', 'btns');
+		cbtns.appendChild(buttonRow('fit view (f)', function () { app.fitView(); }));
+		cbtns.appendChild(buttonRow('reset camera', function () { app.resetCamera(); }));
+		dim3Box.appendChild(cbtns);
+		panel.appendChild(dim3Box);
 
 		// trace mode: animate / whole (exclusive switch)
 		var modeWrap = el('div', 'btns');
@@ -186,7 +218,8 @@
 		wholeBox = el('div');
 		periodLine = el('div', 'sub', '');
 		wholeBox.appendChild(periodLine);
-		wholeBox.appendChild(sliderRow('max period', 4, 4000, 4, app.maxPeriod, function (v) {
+		var mpL = Settings.LIMITS.maxPeriod;
+		wholeBox.appendChild(sliderRow('max period', mpL.min, mpL.max, mpL.step, app.maxPeriod, function (v) {
 			app.setMaxPeriod(v);
 		}, null, 'maxPeriod'));
 		wholeBox.appendChild(el('div', 'help',
@@ -194,12 +227,13 @@
 			'SMALLEST turn count that closes the figure, which for gear ratios on the ' +
 			'whole-mode grid is usually far below the limit. lower it to cut a long ' +
 			'figure short (drawn as ~approx), raise it to let a long one close.'));
-		wholeBox.appendChild(sliderRow('detail', 20, 2000, 20, app.samplesPerTurn, function (v) {
+		var spL = Settings.LIMITS.samplesPerTurn;
+		wholeBox.appendChild(sliderRow('detail', spL.min, spL.max, spL.step, app.samplesPerTurn, function (v) {
 			app.setSamplesPerTurn(v);
 		}, null, 'samplesPerTurn'));
 		wholeBox.appendChild(el('div', 'help',
 			'points per turn of the baked curve - this is the smoothness knob ' +
-			'(period x detail points, capped at 40000 per pencil).'));
+			'(period x detail points, capped at ' + Settings.LIMITS.trailCap.max + ' per pencil).'));
 		panel.appendChild(wholeBox);
 
 		panel.appendChild(checkboxRow('bake full figure (overlay)', app.overlay.on, function (v) {
@@ -249,12 +283,13 @@
 		autosaveLabel = el('div', 'auto', 'autosave: on');
 		panel.appendChild(autosaveLabel);
 
-		var help = el('div', 'help',
+		helpLine = el('div', 'help',
 			'space pause - wheel zoom - drag pan - click gear to edit - rmb browser menu - Esc close');
-		panel.appendChild(help);
+		panel.appendChild(helpLine);
 
 		GUI.setMode(app.mode);
 		GUI.setColorMode(app.colorMode || 'frequency');
+		GUI.setDim(app.dim || '2d');
 		rebuildLevels();
 	}
 
@@ -325,6 +360,7 @@
 
 	function openMenu(gear, clientX, clientY) {
 		currentGear = gear;
+		if (app.dim === '3d' && app.setOrbitGear) app.setOrbitGear(gear);
 		menu.innerHTML = '';
 		var whole = app.mode === 'whole';
 		var title = el('div', 'ptitle drag');
@@ -347,6 +383,15 @@
 		menu.appendChild(sliderRow('speed', -1, 1, 0.01, gear.speed, function (v) {
 			gear.speed = v; edit(gear, 'geom');
 		}, whole ? app.speedChoices() : null));
+
+		// 3D second axis: this gear's tilt / precession speed (0 = stays in plane).
+		// whole mode snaps like speed so the two-axis bake closes. editing it is
+		// a geometry change (App.setGearSpeed2 clears the subtree / re-bakes).
+		if (app.dim === '3d') {
+			menu.appendChild(sliderRow('tilt speed', -1, 1, 0.01, gear.speed2 || 0, function (v) {
+				app.setGearSpeed2(gear, v);
+			}, whole ? app.speedChoices() : null));
+		}
 
 		menu.appendChild(sliderRow('pencil d', 0, 1, 0.01, gear.pencil.d, function (v) {
 			gear.pencil.d = v; edit(gear, 'geom');
@@ -379,12 +424,22 @@
 		menu.appendChild(speedRow);
 
 		if (!whole) {
-			menu.appendChild(sliderRow('trail length', 500, Gear.CAP, 500, gear.trailCap, function (v) {
+			var tcL = Settings.LIMITS.trailCap;
+			menu.appendChild(sliderRow('trail length', tcL.min, tcL.max, tcL.step, gear.trailCap, function (v) {
 				app.setTrailCap(gear, v); edit(gear, 'trail');
 			}));
 			menu.appendChild(el('div', 'help',
 				'how many points of the trail stay on screen (animate mode). whole mode ' +
 				'draws the entire closed curve - its smoothness is the sidebar detail slider.'));
+		}
+
+		// 3D: quick camera row (reframing after editing a gear is common).
+		if (app.dim === '3d') {
+			var vb = el('div', 'btns');
+			vb.appendChild(buttonRow('fit view (f)', function () { app.fitView(); }));
+			vb.appendChild(buttonRow('reset camera', function () { app.resetCamera(); }));
+			menu.appendChild(el('div', 'sub', 'view'));
+			menu.appendChild(vb);
 		}
 
 		var gb = el('div', 'btns');
@@ -418,6 +473,8 @@
 		menu.classList.add('hidden');
 		currentGear = null;
 		speedLabRefresh = null;
+		// camera falls back to orbiting the root once the menu closes.
+		if (app.dim === '3d' && app.setOrbitGear) app.setOrbitGear(null);
 	}
 
 	function isMenuOpen() { return currentGear != null; }
@@ -438,6 +495,15 @@
 		setColorMode: function (m) {
 			for (var key in colorModeBtns) colorModeBtns[key].classList.toggle('active', key === m);
 		},
+		// show/hide the 3D section + help wording and the dim button state.
+		setDim: function (d) {
+			for (var key in dimBtns) dimBtns[key].classList.toggle('active', key === d);
+			if (dim3Box) dim3Box.style.display = (d === '3d') ? '' : 'none';
+			if (helpLine) helpLine.textContent = (d === '3d')
+				? 'g back to 2D - drag orbit - wheel dolly - right/middle drag pan - f fit - click gear to edit'
+				: 'space pause - wheel zoom - drag pan - click gear to edit - g 3D - rmb browser menu - Esc close';
+		},
+		setAutoRotate: function (v) { if (checkboxRefs.autoRotate) checkboxRefs.autoRotate.checked = !!v; },
 		// live readout: exact vs approximate closure, plus background bake
 		// progress. never a modal / blocking toast - the figure keeps updating.
 		setPeriod: function (period, progress, points) {
@@ -450,10 +516,9 @@
 			periodLine.textContent = txt;
 		},
 		// ---- setters that sync a checkbox/range input with a saved app value ----
-		// called by App.applyAppState when loading a scene with a saved app bag
-		// (or by App.resetScene when restoring defaults). They update the DOM
-		// without re-firing the input handlers, then notify the App so the
-		// overlay/state is consistent.
+		// called by Settings.applyApp when loading a scene with a saved app bag
+		// (or when reset restores defaults). They update the DOM without
+		// re-firing the input handlers, then the App state stays consistent.
 		setSymmetry: function (v) { if (checkboxRefs.symmetry) checkboxRefs.symmetry.checked = v; },
 		setOverlay: function (v) { if (checkboxRefs.overlay) checkboxRefs.overlay.checked = v; },
 		setShowCircles: function (v) { if (checkboxRefs.showCircles) checkboxRefs.showCircles.checked = v; },

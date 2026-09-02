@@ -1,5 +1,65 @@
 # CHANGELOG
 
+## 0.7.0 - true 3D generalization (two rotation axes per gear)
+
+The 0.6 approach (one global spin speed sweeping the flat figure into a
+surface of revolution) was rejected; 3D is now a genuine generalization of
+the mechanism rather than a post-hoc lift.
+
+- **two rotation axes per gear.** every gear is a sphere carrying a nested 3D
+  orientation frame (`gear.f3`, columns e1/e2/e3). it precesses about TWO axes
+  of the frame it is mounted in: spin about the disc normal (`speed`, the
+  ordinary in-plane rolling) and tilt/precession about an in-plane diameter
+  (`speed2`, a NEW per-gear control, default 0). frames thread down the gear
+  tree (each child mounts in its parent's pen frame), so tilts compose into
+  genuine knotted 3D curves. with every `speed2` = 0 the mechanism reduces
+  exactly to the flat 2D figure standing in the XZ plane.
+- **trails are real 3D points.** rings store `x y z r g b` per point in 3D
+  (stride 6) vs `x y r g b` in 2D (stride 5); the stride switches and the trace
+  clears on a dimension change (`Gear.setTreeStride`).
+- **gears draw as sphere outlines.** a sphere's silhouette projects to a
+  screen-space circle (unlike a tilted disc's ellipse), so each gear renders
+  as a single clean outline circle at its projected sphere centre; no fill or
+  shading. dial arms link sphere centres to the live 3D pen points.
+- **camera orbits the selected gear.** dragging orbits the open menu's gear
+  sphere centre; with no menu open it orbits the root (which normally sits at
+  the origin). fit/reframe measure from that pivot. (`js/camera3.js` keeps its
+  pure mat4 lookAt math, pitch clamp, yaw wrap, dolly band, pan, auto-rotate.)
+- **3D whole mode closes on the two-axis model.** period detection pushes, for
+  each gear in a drawn subtree, both rotation rates (spin, tilt) plus the
+  pen-frame roll rate (`speed*ratio`) as closure harmonics, so the nested
+  frames repeat whole turns together and the baked curve closes in (x,y,z);
+  tilt snaps onto the same low-denominator grid as speed in whole mode.
+- **scene format:** per-gear `speed2` rides on the gears; top-level `dim` and
+  `camera` persist (the old top-level `spinSpeed` is gone; legacy/`default.js`/
+  autosave load and default to 2D with all tilts 0).
+- `test/run.js` - 161 headless checks: nested-frame kinematics, speed2=0
+  reproduces 2D in (x,z) with y=0, tilt lifts the pen out of plane, two-axis
+  bake closure, stride 5/6 switch + save/load round-trip, per-gear tilt
+  slider, orbit-pivot menu behavior, plus all prior 2D/camera checks.
+
+## 0.6.0 - (REJECTED) plane-spin surface of revolution
+> superseded by 0.7.0; kept in git history. the rotating-plane / global spin
+> model produced a swept "vase/cage", not a per-gear two-axis mechanism.
+
+## 0.5.7 - settings.js: single source of truth for settings + state
+- new `js/settings.js` owns every slider bound (min/max/step/default), a
+  `clamp(field, v)` used by both the runtime setters and the save loader, the
+  persisted `app` schema (per-field default, getter, loader coercion, an
+  explicit apply recipe) and the autosave store key. `defaultApp`,
+  `sanitizeApp`, `snapshotApp`, `applyApp` replace the duplicated default /
+  whitelist / snapshot / apply blocks that used to live in gear.js and
+  main.js. changing a bound (e.g. max period) or adding a persisted toggle is
+  now a one-line / one-entry edit.
+- the `max period` / `detail` / `trail length` GUI rows read their bounds from
+  `Settings.LIMITS` (the help cap too), so the slider, the runtime clamp and
+  the loader clamp can no longer drift apart.
+- recipes call the public `App.markDirty()` (the old main.js-local function is
+  not visible across the separate classic-script scopes); `settings.js`
+  publishes to `globalThis` under node as well as `window` so the test loader
+  resolves it. a drift-guard test asserts the live App equals the schema
+  defaults after init.
+
 ## 0.5.6 - follow-up review (deep levels, trail length, max period)
 - **lvl >= 4 really fixed.** the size fix was still missing: a new sub-gear used
   `Math.max(0.05, parent.r * 0.45)`, so from depth 3 down every gear clamped to

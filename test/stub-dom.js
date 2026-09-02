@@ -38,6 +38,12 @@ function makeEl(tag) {
 		node.firstChild = node.children[0] || null;
 		return c;
 	};
+	node.replaceChild = function (neu, old) {
+		var i = node.children.indexOf(old);
+		if (i >= 0) node.children[i] = neu;
+		node.firstChild = node.children[0] || null;
+		return old;
+	};
 	node.addEventListener = function (t, fn) { (node.listeners[t] = node.listeners[t] || []).push(fn); };
 	node.removeEventListener = function () { };
 	node.dispatch = function (t, ev) {
@@ -84,10 +90,23 @@ function boot(opts) {
 		c: makeEl('canvas'), panel: makeEl('div'), ctxmenu: makeEl('div'), toast: makeEl('div')
 	};
 	var frames = [];
+	var timers = [];
+	function sbSetTimeout(fn, ms) { var id = timers.length; timers.push({ fn: fn, due: Date.now() + (ms || 0), id: id }); return id; }
+	function sbClearTimeout(id) { if (timers[id]) timers[id] = null; }
+	// run every scheduled sandbox timer whose time has come (drives the
+	// debounced autosave / wheel / refine paths deterministically in tests).
+	function flushTimers(waitMs) {
+		var horizon = Date.now() + (waitMs || 0);
+		for (var i = 0; i < timers.length; i++) {
+			var t = timers[i];
+			if (t && t.due <= horizon) { timers[i] = null; t.fn(); }
+		}
+	}
 	var sandbox = {
 		console: console,
 		Math: Math, Date: Date, JSON: JSON, Float32Array: Float32Array, Uint16Array: Uint16Array,
-		setTimeout: setTimeout, clearTimeout: clearTimeout,
+		setTimeout: sbSetTimeout, clearTimeout: sbClearTimeout,
+		flushTimers: flushTimers,
 		performance: { now: function () { return Date.now(); } },
 		navigator: { clipboard: null },
 		localStorage: opts.autosave === false ? null : {
@@ -115,7 +134,7 @@ function boot(opts) {
 	sandbox.document.body.innerHTML = '';
 	vm.createContext(sandbox);
 	var root = path.join(__dirname, '..');
-	['js/gear.js', 'js/render.js', 'js/gui.js', 'js/main.js'].forEach(function (f) {
+	['js/settings.js', 'js/gear.js', 'js/render.js', 'js/camera3.js', 'js/gui.js', 'js/main.js'].forEach(function (f) {
 		vm.runInContext(fs.readFileSync(path.join(root, f), 'utf8'), sandbox, { filename: f });
 	});
 	// run pending rAF callbacks n times (drives the frame loop by hand)

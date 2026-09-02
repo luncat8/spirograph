@@ -28,6 +28,14 @@ draw hypotrochoid / epitrochoid curves in the browser. no build step.
 	  .js or legacy .json (file or clipboard), autosave to localStorage
 	60+ FPS pan/zoom in both modes: direct-draw during gestures, one overlay
 	  re-bake on release, auto-tuned decimation on weak GPUs
+	3D mode: a genuine two-axis generalization - every gear is a sphere that
+	  precesses about TWO axes (in-plane `speed` + per-gear tilt `speed2`),
+	  nested 3D orientation frames thread down the gear tree; trails are real
+	  3D point streams (x y z rgb), gears draw as sphere-outline circles; the
+	  orbit camera (drag orbit, wheel/pinch dolly, right/middle drag pan,
+	  auto-rotate, fit) pivots on the selected gear's sphere centre (else the
+	  root), and trails are depth-sorted via an overlay depth buffer; with all
+	  tilt speeds 0 the figure is exactly the flat 2D curve standing upright
 	zero dependencies, WebGL2, runs from file://
 
 
@@ -200,18 +208,28 @@ modern browser with WebGL2 support
 
 ### controls
 	space - pause / resume
-	wheel or gesture - zoom
-	drag - pan
+	wheel or gesture - zoom (2D) / dolly (3D)
+	drag - pan (2D); left-drag orbits in 3D, right/middle-drag pans in both
 	click / hover gear axis - context menu
 	Esc - close context menu (also auto-closes)
 
 	GUI buttons, also keyboard shortcuts:
 	c - clear canvas
 	x - reset objects to default scene + view transform
+	g - toggle 2D / 3D
+	f - fit camera (3D)
 	s - copy scene model (gears, view) json to clipboard
 	d - download scene model as .js file (rename to default.js for startup scene)
 	o - load scene model from file (.js or legacy .json)
 	p - load scene model from clipboard
+
+in 3D the panel shows a `3D` section: an auto-rotate-camera toggle and
+fit / reset-camera buttons. the second rotation axis is PER GEAR - each gear's
+context menu gains a `tilt speed` slider (its own precession speed, 0 = stays
+in plane; snapped to period-friendly values in whole mode so the baked 3D
+figure closes). opening a gear menu makes the orbit camera pivot on that
+gear's sphere centre; closing it returns the pivot to the root. double-click
+empty space (or `f`) reframes; the menu also has a "view" quick row.
 ### state
 
 on exit save to localStorage, restored on load. 
@@ -235,15 +253,21 @@ colors are hex strings, parsed to rgb floats internally for webgl, example:
 	               "children": [] } ],
 	  "view": { "zoom": 1, "pan": [0, 0] },
 	  "globalSpeed": 1,
-	  "colorMode": "frequency"
+	  "colorMode": "frequency",
+	  "dim": "2d",
+	  "camera": null
 	}
 
 `phase0` (constant mount offset of the gear around its parent, radians - what
-the level sliders use to build a rosette), `rot` (live orbit angle) and
+the level sliders use to build a rosette), `rot` (live orbit angle),
+`speed2` (3D tilt/precession speed, -1..1, per gear; 0 = stays in plane) and
 `trailCap` (soft cap on stored trail points) are optional; legacy files
-without them default to 0 / 0 / 20000. the `app` block additionally carries
-`maxPeriod` (legacy files may carry the old `periodThreshold`, which maps
-onto it).
+without them default to 0 / 0 / 0 / 20000. the `app` block additionally
+carries `maxPeriod` (legacy files may carry the old `periodThreshold`, which
+maps onto it). the top-level `dim` (`"2d"` / `"3d"`) and `camera`
+(`{yaw,pitch,dist,target:[x,y,z]}`) are 3D fields, all optional - missing
+values default to 2D / a refit camera (a 3D file with no camera refits on
+entry).
 
 
 ### structure
@@ -255,14 +279,13 @@ onto it).
 	implementation-log.txt - what is already done and next step for LLM agents
 	findings-pitfalls-skills.md - notes for LLM agents
 	CHANGELOG.md - short release notes
-	03-performance-refactoring-plan.md - pan/zoom perf plan (implemented)
-	04-plan-level-sliders-symmetry.md - level sliders + symmetry plan (implemented)
-	06-review-branch-comparison.md - review of the two 04-plan implementations
-	05-plan-3D.md - 3D mode plan (next)
+	js/settings.js - single source of truth for slider bounds + the persisted
+	  app-state schema (defaults, loader coercion, apply recipes), store key
 	js/main.js - init, loop
 	js/gear.js - gear math
-	js/render.js - webgl2 line drawing (shaders, buffers, MSAA)
-	js/gui.js - context menu, sliders
+	js/render.js - webgl2 line drawing (analytic AA, overlay FBO, depth)
+	js/camera3.js - 3D orbit camera (pure mat4 math, no DOM)
+	js/gui.js - panel, context menu, sliders
 	test/run.js - headless checks: `node test/run.js`
 	test/preview.js - offline PNG render of a bake: `node test/preview.js out.png`
 

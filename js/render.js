@@ -24,7 +24,7 @@
 	var W = 1, H = 1;
 	var lineProg = null, vao = null, vbo = null, uResLoc = null;
 	var quadProg = null, quadVao = null, quadVbo = null, uTexLoc = null;
-	var fbo = null, fboTex = null, fboW = 1, fboH = 1;
+	var fbo = null, fboTex = null, fboDepth = null, fboW = 1, fboH = 1;
 
 	// ---- additive glow point-sprite pass (Points mode) ----
 	var GLOW_CAP = 4096;
@@ -231,9 +231,21 @@
 	function begin(bg) {
 		gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 		gl.viewport(0, 0, W, H);
+		// 2D path never uses depth (flat painter order); keep it off so a stale
+		// depth buffer cannot discard later 2D draws.
+		gl.disable(gl.DEPTH_TEST);
+		gl.depthMask(false);
 		gl.clearColor(bg[0], bg[1], bg[2], 1);
-		gl.clear(gl.COLOR_BUFFER_BIT);
+		gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 		vCount = 0;
+	}
+
+	// 3D path: depth test resolves occlusion (baked overlay + direct draws).
+	// the default framebuffer already has a depth attachment (webgl2 defaults
+	// depth:true); the overlay FBO gets a DEPTH renderbuffer (overlayResize).
+	function depth(on) {
+		if (on) { gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); gl.depthMask(true); }
+		else { gl.disable(gl.DEPTH_TEST); gl.depthMask(false); }
 	}
 
 	function pushVert(px, py, ax, ay, bx, by, r, g, b, a, half) {
@@ -364,6 +376,7 @@
 	function overlayResize(w, h) {
 		fboW = w; fboH = h;
 		if (fboTex) gl.deleteTexture(fboTex);
+		if (fboDepth) gl.deleteRenderbuffer(fboDepth);
 		if (fbo) gl.deleteFramebuffer(fbo);
 		fboTex = gl.createTexture();
 		gl.bindTexture(gl.TEXTURE_2D, fboTex);
@@ -372,9 +385,15 @@
 		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
 		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+		// 3D bakes need a depth buffer so the baked figure resolves occlusion
+		// once (the blit is a flat quad; the 2D path never enables depth).
+		fboDepth = gl.createRenderbuffer();
+		gl.bindRenderbuffer(gl.RENDERBUFFER, fboDepth);
+		gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h);
 		fbo = gl.createFramebuffer();
 		gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
 		gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fboTex, 0);
+		gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, fboDepth);
 		var status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
 		gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 		if (status !== gl.FRAMEBUFFER_COMPLETE) {
@@ -395,7 +414,8 @@
 		},
 		clear: function () {
 			gl.clearColor(0, 0, 0, 0);
-			gl.clear(gl.COLOR_BUFFER_BIT);
+			gl.clearDepth(1);
+			gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 		},
 		blitToScreen: function () {
 			gl.bindVertexArray(quadVao);
@@ -412,6 +432,7 @@
 		init: init,
 		resize: resize,
 		begin: begin,
+		depth: depth,
 		seg: seg,
 		circle: circle,
 		dot: dot,

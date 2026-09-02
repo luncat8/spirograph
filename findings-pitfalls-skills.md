@@ -77,3 +77,80 @@
 - a search CEILING is not a target. "max period 2000" does not make a 2000
   turn figure: the scan reports the smallest closing turn count. say so in the
   help text, and keep the range near the useful band (4..4000).
+
+## settings / single source (0.5.7)
+- slider bounds, defaults and the loader clamp were duplicated across gui.js
+  (row min/max), main.js (the setter clamp) and gear.js (the deserialize
+  clamp). put every bound once in `js/settings.js` `LIMITS` and route all
+  three through one `clamp(field, v)`; a test reading the slider attributes
+  from `Settings.LIMITS` stops the "slider says 4..4000, loader clamps to
+  20000" drift.
+- the persisted `app` bag (mode, toggles, bake options) is one `APP_SCHEMA`
+  table: default, getter off the live App, loader coercion and an explicit
+  apply recipe per field. `snapshotApp` saves, `sanitizeApp` validates,
+  `applyApp` pushes into live App + GUI.
+- classic `<script>` files each have their own IIFE scope, so a recipe in
+  settings.js CANNOT close over a main.js local (e.g. `markDirty`). call the
+  public `App.markDirty()`. under node, `require('../js/gear.js')` also has no
+  access to the browser `window` global: a file another file reads for free
+  must publish to `globalThis` (settings.js does `root = window || globalThis`).
+- default-on toggles (`overlay`, `showCircles`, `drawTrails`) load with
+  "anything except an explicit false/0 is on": only an actual `false` (or `0`,
+  which the old boolean-typed check treated as off) flips them. default-off
+  toggles take only a real `true`/`1`.
+
+## 3D mode (0.6.0)
+- the 3D lift that keeps the figure is the ROTATING-PLANE polar map,
+  (x2d,y2d) -> (x2d*cos phi, x2d*sin phi, y2d), the 2D curve drawn on a
+  vertical plane through the z axis that spins with the second speed. the
+  cylindrical lift (r=rho, theta=phi, z=rho) drops the in-plane angle and the
+  spirograph shape degenerates into a cone wobble - rejected.
+- second speed / closure: the spin azimuth is phi = spinK * rootRot. a whole
+  3D figure closes only when spinK*root.speed*u is an integer, so period
+  detection must add the PRODUCT term per root
+  (`pushHarm(|spinK*root.speed|, ~1)` into the same positional closure scan;
+  rationalize(spinK).den alone is wrong - root.speed 1/2 + k 1/2 needs u
+  divisible by 4). spin snaps to the +-k/d grid in whole mode.
+- per-point phase: the azimuth of a ring point depends on WHEN it was drawn,
+  so the ring stores the root rotation at push time in a parallel
+  `phaseRing` (Float32Array, sized with the ring; copy it in reallocRing,
+  seed missing phases 0 for trails drawn before 3D). do NOT widen the stride-5
+  ring to stride 6 - every tuned 2D consumer would change.
+- the 2D line renderer eats SCREEN pixels, so 3D projects world->screen in JS
+  (one view-proj mat4 built per frame in camera3.js) and feeds the unchanged
+  draw loops a scratch gear whose ring IS the projected screen coords. the
+  draw loops read App.S/pan/cx0/cy0 as globals, so install an identity
+  transform (pushIdentity/popIdentity, six writes, no closure) around the 3D
+  draw - do not thread transform params into the hot loop.
+- screen projection is top-left origin like w2s: sx=(ndx+1)*0.5*W,
+  sy=(1-ndy)*0.5*H. world UP is +z (mat4LookAt up [0,0,1]); default yaw pi/2
+  puts the eye on +y so the phi=0 XZ plane faces the viewer upright. matrices
+  are ROW-major: projectPoint reads m[row*4+col] (mixing column-major indices
+  silently sends everything to (0,0)).
+- depth: only the overlay FBO needs a new DEPTH_COMPONENT24 renderbuffer (the
+  default framebuffer already has depth). enable depth only for the 3D trail
+  pass; `begin()` (2D path) disables DEPTH_TEST and clears depth. translucent
+  AA edges still write depth, so a nearer segment's feather can halo a far
+  one - the line shader's `discard` at a<=0 trims the worst of it.
+- camera gestures reuse the whole 0.4.0 gesture machinery: orbit/pan/dolly set
+  viewDirty + requestRender and draw directly at the live camera (decimated
+  when over budget), and the overlay re-bakes once on settle. isGestureActive
+  also covers the fit ease and auto-rotate.
+- REWRITTEN (0.7): gears are SPHERES, not tilted discs. a sphere's silhouette
+  projects to a screen-space CIRCLE (its radius is the projected sphere radius
+  along the camera-right axis), so the outline is a single R.circle at the
+  projected centre - cleaner than the old 64-seg ellipse polyline, which was
+  what a tilted DISC would need. outlines only (no fill/shade). trails are real
+  3D points (stride 6 x y z rgb); project ring[k] straight through the camera.
+- the 3D model is nested FRAMES, not a global plane sweep: each gear mounts in
+  its parent's pen frame and has TWO angles (spin about the frame normal, tilt
+  about the spun e1); frame F is 9 floats (columns e1,e2,e3). speed2=0 must
+  reproduce 2D exactly (figure in XZ, world y=0) - keep that as the unit test.
+  period closure for nested rotations can't cancel like 2D harmonics: require
+  each drawn gear's speed, speed2 and speed*ratio (pen-frame roll) to be whole
+  turns.
+- w2s3D returns a REUSED scratch object: any caller that holds two points at
+  once (hit test centre+rim, sphere centre+radius, dial arms) must use the
+  second scratch (w2s3DC) or read scalars immediately, else the 2nd projection
+  overwrites the first and circles draw at the rim point.
+

@@ -2,7 +2,9 @@
 // run: node test/run.js      (no dependencies, no build)
 'use strict';
 
+var Settings = require('../js/settings.js');
 var Gear = require('../js/gear.js');
+var Camera3 = require('../js/camera3.js');
 var boot = require('./stub-dom.js').boot;
 
 var pass = 0, fail = 0;
@@ -124,11 +126,131 @@ function scene() {
 	ok(back.roots[0].children[0].trailCap === 3500, 'trailCap survives a save/load');
 })();
 
+// ---- camera3.js (pure 3D math, no DOM) -------------------------------
+(function cameraMath() {
+	Camera3.setViewport(600, 600);
+	var cam = Camera3.defaultCamera();
+	var m = new Float32Array(16), p = [0, 0, 0];
+	Camera3.viewProj(m, cam, 600, 600);
+	// orbit target projects to screen center.
+	Camera3.projectPoint(m, 0, 0, 0, p);
+	ok(Math.abs(p[0] - 300) < 0.5 && Math.abs(p[1] - 300) < 0.5, 'orbit target projects to screen center', p[0] + ',' + p[1]);
+	// default view (yaw pi/2): the spin-0 figure plane is the XZ plane viewed
+	// face-on from +y, so 2D +x maps to screen -x and 2D +y maps to screen up.
+	Camera3.projectPoint(m, 0.5, 0, 0, p);
+	ok(p[0] < 300 && Math.abs(p[1] - 300) < 1, 'world +x projects left in the default view', p[0] + ',' + p[1]);
+	Camera3.projectPoint(m, 0, 0, 0.5, p);
+	ok(Math.abs(p[0] - 300) < 1 && p[1] < 300, 'world +z (up) projects up', p[0] + ',' + p[1]);
+	// a point behind the camera is reported not-visible. default camera looks
+	// from +y toward the origin, so a point far at +y (past the eye) is behind.
+	var behind = Camera3.projectPoint(m, 0, 10, 0, [0, 0]);
+	ok(behind === false, 'a point behind the camera is flagged');
+	// pitch clamps off the poles (no gimbal flip).
+	var c3 = Camera3.defaultCamera();
+	Camera3.orbitBy(c3, 0, 100);
+	ok(Math.abs(c3.pitch) <= Camera3.PITCH_LIMIT + 1e-9, 'pitch clamps at +89 deg', c3.pitch);
+	Camera3.orbitBy(c3, 0, -1000);
+	ok(Math.abs(c3.pitch) <= Camera3.PITCH_LIMIT + 1e-9, 'pitch clamps at -89 deg', c3.pitch);
+	// yaw wraps instead of growing unbounded.
+	var c4 = Camera3.defaultCamera();
+	for (var i = 0; i < 100; i++) Camera3.orbitBy(c4, 0.5, 0);
+	ok(Math.abs(c4.yaw) <= Math.PI, 'yaw normalizes to +-pi', c4.yaw);
+	// dolly clamps to a band around the fit radius.
+	var c5 = Camera3.defaultCamera();
+	for (var j = 0; j < 50; j++) Camera3.dolly(c5, 0.1, 3);
+	ok(Math.abs(c5.dist - (0.05 * 3)) < 1e-6, 'dolly clamps at the near floor', c5.dist);
+	var c6 = Camera3.defaultCamera();
+	for (var k = 0; k < 50; k++) Camera3.dolly(c6, 10, 3);
+	ok(Math.abs(c6.dist - (40 * 3)) < 1e-6, 'dolly clamps at the far ceiling', c6.dist);
+	// pan moves the target and scales with distance (units/pixel grows with dist).
+	var c7 = Camera3.defaultCamera(), t7a = c7.target[0];
+	c7.dist = 3; Camera3.panBy(c7, 100, 0, 600, 600); var dSmall = c7.target[0] - t7a;
+	var c8 = Camera3.defaultCamera(), t8a = c8.target[0];
+	c8.dist = 9; Camera3.panBy(c8, 100, 0, 600, 600); var dLarge = c8.target[0] - t8a;
+	ok(Math.abs(dLarge) > Math.abs(dSmall) * 2, 'pan speed scales with distance', dSmall + ' vs ' + dLarge);
+	// camera sanitizer tolerates garbage.
+	var bad = Camera3.sanitizeCamera({ yaw: 'nope', pitch: 999, dist: -5, target: [1, 2] });
+	ok(isFinite(bad.yaw) && Math.abs(bad.pitch) <= Camera3.PITCH_LIMIT && bad.dist > 0, 'sanitizeCamera heals a bad camera');
+	// fit distance grows with the scene radius.
+	ok(Camera3.fitDist(2) > Camera3.fitDist(1), 'fit distance scales with radius');
+})();
+
+// ---- gear: 3D two-axis kinematics + ring stride -----------------------
+(function kinematics3D() {
+	function build(s2root, s2kid) {
+		var root = Gear.makeGear({ r: 0.6, speed: 0.5, speed2: s2root || 0,
+			pencil: { d: 0.3, c1: { on: true, color: '#ff4d4d' }, c2: { on: false } } });
+		var kid = Gear.makeGear({ r: 0.2, speed: 0.25, speed2: s2kid || 0, internal: true,
+			pencil: { d: 0.14, c1: { on: true, color: '#ffd24d' }, c2: { on: false } } });
+		root.children.push(kid);
+		Gear.initRuntime(root, null);
+		return [root];
+	}
+
+	// every speed2 == 0 reproduces the flat 2D figure standing in the XZ plane
+	// (world y stays 0); the projected (x,z) matches the 2D ring (x,y).
+	var flat2 = build(0, 0); Gear.setTreeStride(flat2, false);
+	var pf2 = Gear.detectPeriod(flat2, 2000); Gear.computeWhole(flat2, pf2, 3000, false);
+	var flat3 = build(0, 0); Gear.setTreeStride(flat3, true);
+	var pf3 = Gear.detectPeriod(flat3, 2000, null, true); Gear.computeWhole(flat3, pf3, 3000, true);
+	ok(flat3[0].children[0].stride === 6, '3D rings use stride 6');
+	var g2 = flat2[0].children[0], g3 = flat3[0].children[0];
+	var maxErr = 0, yMax = 0;
+	for (var i = 0; i < g3.count; i++) {
+		var a = i * 5, b = i * 6;
+		maxErr = Math.max(maxErr, Math.hypot(g2.ring[a] - g3.ring[b], g2.ring[a + 1] - g3.ring[b + 2]));
+		yMax = Math.max(yMax, Math.abs(g3.ring[b + 1]));
+	}
+	ok(maxErr < 1e-6, 'speed2=0 reproduces the 2D geometry (x,z)', maxErr.toExponential(2));
+	ok(yMax < 1e-9, 'speed2=0 keeps the flat figure in the XZ plane (y=0)', yMax.toExponential(2));
+
+	// a nonzero tilt lifts the pen out of the plane: world y varies -> true 3D.
+	var tilt = build(0.3, 0.2); Gear.setTreeStride(tilt, true);
+	var pt = Gear.detectPeriod(tilt, 4000, null, true);
+	Gear.computeWhole(tilt, pt, Math.min(12000, pt.turns * 120), true);
+	var gt = tilt[0].children[0];
+	var ty = 0;
+	for (var k = 0; k < gt.count; k++) ty = Math.max(ty, Math.abs(gt.ring[k * 6 + 1]));
+	ok(ty > 0.05, 'a tilt speed lifts the pen out of plane (y varies)', ty.toFixed(3));
+	var ia = gt.head * 6, ib = ((gt.head + gt.count - 1) % gt.cap) * 6;
+	var gap = Math.hypot(gt.ring[ia] - gt.ring[ib], gt.ring[ia + 1] - gt.ring[ib + 1], gt.ring[ia + 2] - gt.ring[ib + 2]);
+	ok(gap < 0.01, '3D two-axis bake closes on itself (x,y,z)', gap.toExponential(2));
+
+	// the second axis adds a closure constraint: root.speed2 = 0.5 needs u even.
+	var half = build(0.5, 0); Gear.setTreeStride(half, true);
+	var ph = Gear.detectPeriod(half, 4000, null, true);
+	ok(ph.turns % 2 === 0, 'tilt 1/2 forces an even turn count', ph.turns);
+	var flatP = Gear.detectPeriod(build(0, 0), 4000, null, true);
+	ok(ph.turns >= flatP.turns, 'adding a tilt never shortens the period', ph.turns + ' vs ' + flatP.turns);
+
+	// 2D pushPoint keeps stride 5; the 3D call signature writes z into stride 6.
+	var g = Gear.makeGear({ trailCap: 500 });
+	Gear.initRuntime(g, null);
+	var col = [1, 1, 1];
+	for (var q = 0; q < 200; q++) Gear.pushPoint(g, q * 0.01, q * 0.001, col);
+	ok(g.stride === 5 && g.ring[g.head * 5 + 1] !== undefined, '2D pushPoint writes stride 5');
+})();
+
 // ---- live app (real main.js/gui.js on DOM stubs) ---------------------
 var w = boot();
 var App = w.App;
 ok(!!App, 'app booted');
 ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
+
+// drift guard: after init() seeds the live App from Settings.applyApp, every
+// persisted field must equal Settings.defaultApp() (the App initializer only
+// holds placeholders; the schema is the single source of the live values).
+(function liveAppMatchesSchemaDefaults() {
+	var d = Settings.defaultApp();
+	var matched = 0;
+	for (var i = 0; i < Settings.APP_SCHEMA.length; i++) {
+		var f = Settings.APP_SCHEMA[i];
+		if (!f.persist) continue;
+		if (f.get(App) === d[f.key]) matched++;
+		else ok(false, 'live App.' + f.key + ' seeded from schema default', f.get(App) + ' vs ' + d[f.key]);
+	}
+	ok(matched === Settings.APP_SCHEMA.length, 'live App seeded from Settings defaults (' + matched + ' fields)');
+})();
 
 (function levelsFromZero() {
 	App.applyLevel(1, 3);
@@ -331,7 +453,7 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 // ---- app-state bag (mode / toggles / search ceiling) ------------------
 (function appStateRoundtrip() {
 	var d = Gear.defaultAppState();
-	ok(d.maxPeriod === 2000, 'default app state carries the closure ceiling', d.maxPeriod);
+	ok(d.maxPeriod === Settings.LIMITS.maxPeriod.def, 'default app state carries the closure ceiling', d.maxPeriod);
 	var roots = scene();
 	var obj = Gear.serialize(roots, { zoom: 1, pan: [0, 0] }, 1, 'cycles', {
 		mode: 'whole', paused: true, symmetry: true, overlay: false, maxPeriod: 3000,
@@ -346,7 +468,7 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	ok(legacy.app.maxPeriod === 300, 'legacy periodThreshold maps onto maxPeriod', legacy.app.maxPeriod);
 	var bogus = Gear.deserialize({ gears: [], app: { mode: 'nope', maxPeriod: 999999 } });
 	ok(bogus.app.mode === 'animate', 'invalid mode falls back to the default');
-	ok(bogus.app.maxPeriod === 4000, 'maxPeriod is clamped', bogus.app.maxPeriod);
+	ok(bogus.app.maxPeriod === Settings.LIMITS.maxPeriod.max, 'maxPeriod is clamped', bogus.app.maxPeriod);
 	// no app block at all (pre-0.5.1 file)
 	ok(Gear.deserialize({ gears: [] }).app.mode === 'animate', 'legacy file with no app block gets defaults');
 })();
@@ -392,7 +514,7 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	ok(w.byId.toast.textContent.indexOf('threshold') < 0, 'no blocking threshold popup');
 	// raising the ceiling re-runs the search without blocking
 	t0 = Date.now();
-	App.setMaxPeriod(4000);
+	App.setMaxPeriod(Settings.LIMITS.maxPeriod.max);
 	ok(Date.now() - t0 < 60, 'raising the search ceiling is non-blocking', (Date.now() - t0) + 'ms');
 	App.setMode('animate');
 	App.resetScene();
@@ -486,7 +608,7 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	w.tick(20);
 	ok(App.currentPeriod.turns <= 8, 'a low ceiling cuts the figure short', App.currentPeriod.turns);
 	ok(!App.currentPeriod.exact, 'a cut-short figure is reported as approximate');
-	App.setMaxPeriod(2000);
+	App.setMaxPeriod(Settings.LIMITS.maxPeriod.def);
 	w.tick(20);
 	ok(App.currentPeriod.turns === full.turns, 'raising the ceiling restores the exact period');
 	App.setMode('animate');
@@ -506,7 +628,8 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	}
 	var mp = findRow('max period');
 	ok(!!mp, 'panel has a max period slider');
-	ok(String(mp.input.min) === '4' && String(mp.input.max) === '4000', 'max period range is 4..4000',
+	ok(String(mp.input.min) === String(Settings.LIMITS.maxPeriod.min) &&
+		String(mp.input.max) === String(Settings.LIMITS.maxPeriod.max), 'max period range comes from Settings.LIMITS',
 		mp.input.min + '..' + mp.input.max);
 	var det = findRow('detail');
 	ok(!!det, 'panel has a detail (samples/turn) slider');
@@ -526,6 +649,120 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	ok(!hasTrail, 'whole mode: no trail length slider (it has no meaning there)');
 	App.setMode('animate');
 	w.GUI.closeMenu();
+	App.resetScene();
+})();
+
+// ---- 3D mode (live app on stubs) -------------------------------------
+(function mode3D() {
+	App.resetScene();
+	ok(App.dim === '2d', 'fresh app starts in 2D');
+	App.setDim('3d');
+	ok(App.dim === '3d', 'switch to 3D');
+	ok(!!App.cam && isFinite(App.cam.dist) && App.cam.dist > 0, '3D entry creates a fit camera', App.cam && App.cam.dist);
+	ok(App.allGears[1].stride === 6, '3D entry switches rings to stride 6');
+
+	// animate: the trail grows as real 3D points (z channel used). with all
+	// tilt speeds 0 the default flat scene stays in the XZ plane (y ~ 0); once
+	// a gear tilts, world y leaves 0.
+	w.tick(120, 16);
+	var pencil = App.allGears[1];
+	ok(pencil.count > 100, '3D animate grows a trail', pencil.count);
+	App.setGearSpeed2(App.roots[0], 0.5);
+	w.tick(300, 16);
+	var ySeen = 0;
+	for (var i = 0; i < pencil.count; i++) ySeen = Math.max(ySeen, Math.abs(pencil.ring[i * 6 + 1]));
+	ok(ySeen > 0.01, '3D animate pen leaves the plane under tilt', ySeen.toFixed(3));
+	ok(isFinite(App.roots[0].rot2) && App.roots[0].rot2 > 0.01, 'tilt angle (rot2) accumulates', App.roots[0].rot2.toFixed(3));
+
+	// whole mode: per-gear tilt is snapped to the grid; the baked 3D ring closes.
+	App.setGearSpeed2(pencil, 0.5);
+	App.setMode('whole');
+	ok(Math.abs(pencil.speed2 - 0.5) < 1e-9, 'snappable tilt kept in whole mode');
+	App.recomputeWhole(true);
+	var guard = 0;
+	while (guard++ < 20000) {
+		w.tick(1);
+		var c = App.allGears[1].count;
+		if (c > 5000) { var stable = true; for (var s = 0; s < 30; s++) { w.tick(1); if (App.allGears[1].count !== c) { stable = false; break; } } if (stable) break; }
+	}
+	var g3 = App.allGears[1];
+	ok(g3.count > 1000 && g3.stride === 6, '3D whole bake produced a stride-6 ring', g3.count);
+	var ia = g3.head * 6, ib = ((g3.head + g3.count - 1) % g3.cap) * 6;
+	var gap3 = Math.hypot(g3.ring[ia] - g3.ring[ib], g3.ring[ia + 1] - g3.ring[ib + 1], g3.ring[ia + 2] - g3.ring[ib + 2]);
+	ok(gap3 < 0.02, '3D whole ring closes on itself (x,y,z)', gap3.toFixed(4));
+
+	// irrational tilt snaps onto the grid in whole mode (never stays irrational).
+	App.setGearSpeed2(pencil, Math.SQRT2 / 7);
+	var choices = App.speedChoices();
+	ok(choices.indexOf(pencil.speed2) >= 0, 'tilt snaps onto the whole-mode grid', pencil.speed2);
+
+	// camera helpers drive state; the orbit pivot follows the menu gear.
+	var yaw0 = App.cam.yaw, pit0 = App.cam.pitch;
+	Camera3.orbitBy(App.cam, 0.4, 0.2);
+	ok(Math.abs(App.cam.yaw - yaw0) > 0.3 && Math.abs(App.cam.pitch - pit0) > 0.1, 'orbit changes yaw + pitch');
+	var dist0 = App.cam.dist;
+	Camera3.dolly(App.cam, Camera3.wheelFactor(-400), 3);
+	ok(App.cam.dist > dist0, 'wheel dolly moves the camera out');
+	w.GUI.openMenu(pencil, 60, 60);
+	ok(App.orbitGear === pencil, 'opening a menu orbits that gear');
+	App.fitView();
+	w.tick(40, 16);
+	ok(true, 'fit ease completes without throwing');
+	App.resetCamera();
+	w.tick(40, 16);
+	ok(true, 'reset camera completes without throwing');
+	w.GUI.closeMenu();
+	ok(App.orbitGear !== pencil, 'closing the menu returns the orbit pivot to the root');
+
+	// GUI: per-gear tilt slider in the menu + auto-rotate row in the panel.
+	var panelText = '';
+	(function walk(n) {
+		if (n.textContent) panelText += '|' + n.textContent;
+		for (var k2 = 0; k2 < (n.children || []).length; k2++) walk(n.children[k2]);
+	})(w.byId.panel);
+	ok(panelText.indexOf('auto-rotate') >= 0, 'panel has an auto-rotate row');
+	w.GUI.openMenu(pencil, 60, 60);
+	var menuText = '';
+	(function walk2(n) {
+		if (n.textContent) menuText += '|' + n.textContent;
+		for (var k3 = 0; k3 < (n.children || []).length; k3++) walk2(n.children[k3]);
+	})(w.byId.ctxmenu);
+	ok(menuText.indexOf('tilt speed') >= 0, '3D gear menu has a tilt-speed slider');
+	var menuHasView = menuText.indexOf('fit view') >= 0;
+	ok(menuHasView, '3D context menu has a view quick row');
+	w.GUI.closeMenu();
+
+	// back to 2D restores stride 5.
+	App.setMode('animate');
+	App.setDim('2d');
+	ok(App.dim === '2d', 'back to 2D');
+	ok(App.allGears[1].stride === 5, '2D entry switches rings back to stride 5');
+	w.tick(5, 16);
+	App.resetScene();
+})();
+
+// 3D scene save/load round-trip (dim/tilt/camera are persisted).
+(function scene3DRoundtrip() {
+	App.resetScene();
+	App.setDim('3d');
+	App.setGearSpeed2(App.roots[0].children[0], 0.25);
+	App.roots[0].speed2 = 0.15;
+	w.tick(10, 16);
+	// serialize via the debounced autosave (markDirty -> saveLocal), then flush
+	// the sandbox timer queue so the write lands.
+	App.markDirty();
+	w.flushTimers(1000);
+	var stored = w.localStorage._d['spiro.autosave.v1'];
+	ok(!!stored, '3D scene autosaves');
+	var parsed = JSON.parse(stored);
+	ok(parsed.dim === '3d', 'saved scene carries dim');
+	ok(Math.abs(parsed.gears[0].children[0].speed2 - 0.25) < 1e-9, 'saved scene carries per-gear tilt', parsed.gears[0].children[0].speed2);
+	ok(Math.abs(parsed.gears[0].speed2 - 0.15) < 1e-9, 'root tilt persists');
+	ok(!!parsed.camera && isFinite(parsed.camera.yaw) && parsed.camera.target.length === 3, 'saved scene carries the camera');
+	// loading a legacy scene with no dim defaults to 2D (no crash).
+	var leg = Gear.deserialize({ gears: Gear.serialize(App.roots, { zoom: 1, pan: [0, 0] }, 1, 'frequency').gears });
+	ok(leg.app.mode === 'animate', 'legacy-style deserialize still works');
+	App.setDim('2d');
 	App.resetScene();
 })();
 

@@ -44,11 +44,19 @@
 
 	function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
+	// identity pen frame (columns e1 = in-plane cos axis, e2 = disc normal /
+	// spin axis, e3 = in-plane sin axis). root frame stands the disc in XZ so
+	// the face-on camera looks down its normal (world +y) and up is +z.
+	var FRAME_ZERO = [1,0,0, 0,1,0, 0,0,1];
+
 	function makeGear(opts) {
 		opts = opts || {};
 		return {
 			r: opts.r != null ? opts.r : 0.6,
 			speed: opts.speed != null ? opts.speed : 0.2,
+			// second axis speed (3D only): precession / tilt about an in-plane
+			// diameter. 0 = the gear stays in its parent's plane (pure 2D).
+			speed2: opts.speed2 != null ? opts.speed2 : 0,
 			internal: opts.internal != null ? opts.internal : false,
 			// constant mount offset (radians): spreads the children of one
 			// parent evenly (i * 2pi / N) so a level forms a symmetric rosette.
@@ -64,10 +72,17 @@
 			// runtime (filled by initRuntime)
 			parent: null,
 			rot: opts.rot != null ? opts.rot : 0,
+			rot2: 0,                               // integrated tilt (3D)
 			cx: 0, cy: 0,
 			penx: 0, peny: 0,
 			ratio: 1,
-			ring: null, cap: 0, head: 0, count: 0
+			// 3D pose: pen frame (9 floats, columns e1/e2/e3), world center and
+			// pen point. filled by the 3D kinematics in 3D mode.
+			f3: FRAME_ZERO.slice(),
+			c3: [0, 0, 0], pen3: [0, 0, 0],
+			// trace ring. stride 5 = 2D (x y r g b); stride 6 = 3D (x y z r g b).
+			// main.js switches the stride on entering/leaving 3D and clears.
+			ring: null, stride: 5, cap: 0, head: 0, count: 0
 		};
 	}
 
@@ -87,35 +102,58 @@
 	function initRuntime(gear, parent) {
 		gear.parent = parent || null;
 		if (gear.rot == null) gear.rot = 0;
+		if (gear.speed2 == null) gear.speed2 = 0;
+		gear.rot2 = 0;
 		if (gear.phase0 == null) gear.phase0 = 0;
 		// rings are allocated on first use (see ensureRing): a 200-gear tree
-		// used to cost 200 * CAP * 5 floats (~160 MB) before drawing anything.
+		// used to cost 200 * CAP floats before drawing anything.
 		gear.ring = null;
+		gear.stride = gear.stride || 5;
 		gear.cap = 0;
 		gear.head = 0;
 		gear.count = 0;
 		gear.drawn = 0;
 		gear.drawnNewestRing = undefined;
 		gear.cx = 0; gear.cy = 0; gear.penx = 0; gear.peny = 0;
+		// 3D pose
+		gear.f3 = [1,0,0, 0,1,0, 0,0,1];
+		gear.c3 = [0, 0, 0]; gear.pen3 = [0, 0, 0];
 		for (var i = 0; i < gear.children.length; i++) initRuntime(gear.children[i], gear);
 	}
 
+	// ring floats per point for a dimension (5 = 2D xy rgb, 6 = 3D xyz rgb).
+	function strideFor3D(is3D) { return is3D ? 6 : 5; }
+
 	// move the stored points into a fresh buffer of `cap` points (newest kept).
-	function reallocRing(gear, cap) {
-		var ring = new Float32Array(cap * 5);
+	// when the stride grows (2D -> 3D) new points get z = 0; when it shrinks the
+	// z channel is dropped.
+	function reallocRing(gear, cap, stride) {
+		stride = stride || gear.stride;
+		var ring = new Float32Array(cap * stride);
 		var n = Math.min(gear.count, cap);
 		if (gear.ring && n > 0) {
 			var skip = gear.count - n;                 // keep the newest n points
+			var old = gear.stride;
 			for (var k = 0; k < n; k++) {
 				var si = (gear.head + skip + k) % gear.cap;
-				ring[k * 5] = gear.ring[si * 5];
-				ring[k * 5 + 1] = gear.ring[si * 5 + 1];
-				ring[k * 5 + 2] = gear.ring[si * 5 + 2];
-				ring[k * 5 + 3] = gear.ring[si * 5 + 3];
-				ring[k * 5 + 4] = gear.ring[si * 5 + 4];
+				if (stride === 6) {
+					ring[k * 6] = gear.ring[si * old];
+					ring[k * 6 + 1] = gear.ring[si * old + 1];
+					ring[k * 6 + 2] = old === 6 ? gear.ring[si * old + 2] : 0;
+					ring[k * 6 + 3] = gear.ring[si * old + (old - 3)];
+					ring[k * 6 + 4] = gear.ring[si * old + (old - 2)];
+					ring[k * 6 + 5] = gear.ring[si * old + (old - 1)];
+				} else {
+					ring[k * 5] = gear.ring[si * old];
+					ring[k * 5 + 1] = gear.ring[si * old + 1];
+					ring[k * 5 + 2] = gear.ring[si * old + (old - 3)];
+					ring[k * 5 + 3] = gear.ring[si * old + (old - 2)];
+					ring[k * 5 + 4] = gear.ring[si * old + (old - 1)];
+				}
 			}
 		}
 		gear.ring = ring;
+		gear.stride = stride;
 		gear.cap = cap;
 		gear.head = 0;
 		gear.count = n;
@@ -134,14 +172,26 @@
 		while (cap < want) cap *= 2;
 		if (cap > want && !force) cap = want;
 		if (cap > CAP) cap = CAP;
-		reallocRing(gear, cap);
+		reallocRing(gear, cap, gear.stride);
+	}
+
+	// dimension switch: reallocate every ring at the target stride and clear it
+	// (3D and 2D sample different coordinates; old points are not reused).
+	function setRingStride(gear, is3D) {
+		var stride = strideFor3D(is3D);
+		if (gear.stride !== stride) { gear.ring = null; gear.cap = 0; gear.stride = stride; }
+		clearTrace(gear);
+	}
+	function setTreeStride(roots, is3D) {
+		var all = flatten(roots);
+		for (var i = 0; i < all.length; i++) setRingStride(all[i], is3D);
 	}
 
 	// trailCap lowered: drop the oldest points and hand the memory back.
 	function applyTrailCap(gear) {
 		gear.trailCap = clamp(gear.trailCap, 100, CAP);
 		if (!gear.ring || gear.cap <= gear.trailCap) return;
-		reallocRing(gear, gear.trailCap);
+		reallocRing(gear, gear.trailCap, gear.stride);
 		gear.drawn = 0;
 	}
 
@@ -160,13 +210,18 @@
 	// push a pen sample (world position + rgb color baked at draw time) into the
 	// ring buffer; later color changes only affect new points, not existing line.
 	// the ring grows by doubling until trailCap, then evicts the oldest point.
-	function pushPoint(gear, x, y, col) {
+	// 2D callers pass (x, y, col); 3D passes (x, y, z, col). the buffer stride
+	// (5 or 6 floats per point) decides where color lives.
+	function pushPoint(gear, x, y, z, col) {
+		if (col === undefined) { col = z; z = 0; }    // 2D call signature
+		var st = gear.stride;
 		if (gear.count > 0) {
 			var li = (gear.head + gear.count - 1) % gear.cap;
-			var dx = x - gear.ring[li * 5], dy = y - gear.ring[li * 5 + 1];
-			if (dx * dx + dy * dy < EPS * EPS) return;
+			var dx = x - gear.ring[li * st], dy = y - gear.ring[li * st + 1];
+			var dz = st === 6 ? z - gear.ring[li * st + 2] : 0;
+			if (dx * dx + dy * dy + dz * dz < EPS * EPS) return;
 		}
-		if (gear.count >= gear.cap) ensureRing(gear, gear.cap ? gear.cap * 2 : MIN_RING);
+		if (!gear.ring || gear.count >= gear.cap) ensureRing(gear, gear.cap ? gear.cap * 2 : MIN_RING);
 		var idx;
 		if (gear.count < gear.cap) {
 			idx = (gear.head + gear.count) % gear.cap;
@@ -175,21 +230,31 @@
 			idx = gear.head;
 			gear.head = (gear.head + 1) % gear.cap;
 		}
-		gear.ring[idx * 5] = x; gear.ring[idx * 5 + 1] = y;
-		gear.ring[idx * 5 + 2] = col[0]; gear.ring[idx * 5 + 3] = col[1]; gear.ring[idx * 5 + 4] = col[2];
+		var o = idx * st;
+		gear.ring[o] = x; gear.ring[o + 1] = y;
+		if (st === 6) gear.ring[o + 2] = z;
+		gear.ring[o + st - 3] = col[0]; gear.ring[o + st - 2] = col[1]; gear.ring[o + st - 1] = col[2];
 	}
 
-	// call cb(x0,y0,r0,g0,b0, x1,y1,r1,g1,b1) per consecutive segment (ring order, no wrap seam)
+	// call cb(x0,y0[,z0],r0,g0,b0, x1,y1[,z1],r1,g1,b1) per consecutive segment
+	// (ring order, no wrap seam). stride follows the gear's ring.
 	function forEachSegment(gear, cb) {
-		var n = gear.count;
+		var n = gear.count, st = gear.stride;
 		if (!gear.ring) return;
 		for (var j = 0; j < n - 1; j++) {
-			var ia = (gear.head + j) % gear.cap;
-			var ib = (gear.head + j + 1) % gear.cap;
-			cb(
-				gear.ring[ia * 5], gear.ring[ia * 5 + 1], gear.ring[ia * 5 + 2], gear.ring[ia * 5 + 3], gear.ring[ia * 5 + 4],
-				gear.ring[ib * 5], gear.ring[ib * 5 + 1], gear.ring[ib * 5 + 2], gear.ring[ib * 5 + 3], gear.ring[ib * 5 + 4]
-			);
+			var ia = (gear.head + j) % gear.cap, ib = (gear.head + j + 1) % gear.cap;
+			var oa = ia * st, ob = ib * st;
+			if (st === 6) {
+				cb(
+					gear.ring[oa], gear.ring[oa + 1], gear.ring[oa + 2],
+					gear.ring[oa + 3], gear.ring[oa + 4], gear.ring[oa + 5],
+					gear.ring[ob], gear.ring[ob + 1], gear.ring[ob + 2],
+					gear.ring[ob + 3], gear.ring[ob + 4], gear.ring[ob + 5]);
+			} else {
+				cb(
+					gear.ring[oa], gear.ring[oa + 1], gear.ring[oa + 2], gear.ring[oa + 3], gear.ring[oa + 4],
+					gear.ring[ob], gear.ring[ob + 1], gear.ring[ob + 2], gear.ring[ob + 3], gear.ring[ob + 4]);
+			}
 		}
 	}
 
@@ -234,6 +299,93 @@
 		gear.peny = st.cy + gear.pencil.d * Math.sin(st.penA);
 		var ch = gear.children;
 		for (var i = 0; i < ch.length; i++) update(ch[i], gear, st.cx, st.cy, st.penA, dt, globalSpeed);
+	}
+
+	// ---- 3D kinematics: two rotation axes per gear (nested frames) --------
+	// each gear is a sphere carrying a 3D orientation frame (columns e1,e2,e3
+	// stored as 9 floats; e2 is the disc normal / spin axis). a gear is mounted
+	// in its parent's PEN frame (the root is mounted in the world frame) and
+	// rotates about TWO perpendicular axes of that frame:
+	//   - spin about e2 by angle a = phase0 + rot   (the ordinary in-plane
+	//     rolling/orbit rotation; speed)
+	//   - tilt about the spun e1 by angle b = rot2  (precession out of the
+	//     plane; speed2). 0 = the gear stays in its parent's plane.
+	// the child sphere orbits the parent centre along the resulting e1, and the
+	// pen rolls an extra rot*(ratio-1) about the (tilted) spin axis e2 - the
+	// same rolling law as 2D. children mount in this gear's pen frame, so
+	// tilts nest down the tree and every speed2 == 0 reproduces the flat 2D
+	// figure standing in the XZ plane (e1 = +x, e2 = +y, e3 = +z).
+	//
+	// rotate frame f about its e2 axis by angle a (e1 sweeps toward e3):
+	//   e1 -> e1*cos a + e3*sin a ; e3 -> -e1*sin a + e3*cos a ; e2 fixed.
+	function rotE2(f, ca, sa) {
+		var x1 = f[0]*ca + f[6]*sa, y1 = f[1]*ca + f[7]*sa, z1 = f[2]*ca + f[8]*sa;
+		var x3 = -f[0]*sa + f[6]*ca, y3 = -f[1]*sa + f[7]*ca, z3 = -f[2]*sa + f[8]*ca;
+		f[0]=x1; f[1]=y1; f[2]=z1; f[6]=x3; f[7]=y3; f[8]=z3;
+	}
+	// rotate frame f about its e1 axis by angle b (e2 tips toward e3):
+	//   e2 -> e2*cos b + e3*sin b ; e3 -> -e2*sin b + e3*cos b ; e1 fixed.
+	function rotE1(f, cb, sb) {
+		var x2 = f[3]*cb + f[6]*sb, y2 = f[4]*cb + f[7]*sb, z2 = f[5]*cb + f[8]*sb;
+		var x3 = -f[3]*sb + f[6]*cb, y3 = -f[4]*sb + f[7]*cb, z3 = -f[5]*sb + f[8]*cb;
+		f[3]=x2; f[4]=y2; f[5]=z2; f[6]=x3; f[7]=y3; f[8]=z3;
+	}
+
+	// compute one gear's 3D pose from gear.rot / gear.rot2 (callers set both).
+	// writes gear.f3 (the PEN frame children mount in), gear.c3 (world centre),
+	// gear.pen3 (world pen point), gear.ratio. `parent` is the parent gear or
+	// null for a root (mounted in the world/identity frame at the origin).
+	function pose3(gear, parent) {
+		var F = gear.f3, P = parent ? parent.f3 : null;
+		if (P) { F[0]=P[0];F[1]=P[1];F[2]=P[2]; F[3]=P[3];F[4]=P[4];F[5]=P[5]; F[6]=P[6];F[7]=P[7];F[8]=P[8]; }
+		else { F[0]=1;F[1]=0;F[2]=0; F[3]=0;F[4]=1;F[5]=0; F[6]=0;F[7]=0;F[8]=1; }
+		var ratio = parent ? (gear.internal ? (parent.r - gear.r) / gear.r : (parent.r + gear.r) / gear.r) : 1;
+		gear.ratio = ratio;
+		var a = (gear.phase0 || 0) + gear.rot;
+		rotE2(F, Math.cos(a), Math.sin(a));             // spin (orbit direction)
+		rotE1(F, Math.cos(gear.rot2), Math.sin(gear.rot2)); // tilt / precession
+		var c = gear.c3;
+		if (!parent) { c[0]=0; c[1]=0; c[2]=0; }
+		else {
+			var orbitR = gear.internal ? (parent.r - gear.r) : (parent.r + gear.r);
+			c[0]=parent.c3[0]+orbitR*F[0]; c[1]=parent.c3[1]+orbitR*F[1]; c[2]=parent.c3[2]+orbitR*F[2];
+		}
+		var extra = parent ? gear.rot * (ratio - 1) : 0; // pen rolling about e2
+		if (extra) rotE2(F, Math.cos(extra), Math.sin(extra));
+		var pen = gear.pen3;
+		pen[0] = c[0] + gear.pencil.d * F[0];
+		pen[1] = c[1] + gear.pencil.d * F[1];
+		pen[2] = c[2] + gear.pencil.d * F[2];
+	}
+
+	// recursive 3D animate step (mirrors update(); the frame replaces `carry`).
+	function update3(gear, parent, dt, globalSpeed) {
+		gear.rot += gear.speed * globalSpeed * dt;
+		gear.rot2 += (gear.speed2 || 0) * globalSpeed * dt;
+		pose3(gear, parent);
+		for (var i = 0; i < gear.children.length; i++) update3(gear.children[i], gear, dt, globalSpeed);
+	}
+
+	// recompute every gear's 3D pose once at the current rot/rot2 (entry into
+	// 3D, gear add while paused, whole-mode sampling setup).
+	function pose3All(gear, parent) {
+		pose3(gear, parent);
+		for (var i = 0; i < gear.children.length; i++) pose3All(gear.children[i], gear);
+	}
+
+	// whole-mode 3D sample at global parameter phi (parallel to sampleAt).
+	function sample3(gear, parent, phi, timeT) {
+		gear.rot = gear.speed * phi;
+		gear.rot2 = (gear.speed2 || 0) * phi;
+		pose3(gear, parent);
+		var p = gear.pencil;
+		if (p.c1.on || p.c2.on) {
+			var col;
+			if (p.c1.on && p.c2.on) col = mixHue(slotRgb(p.c1), slotRgb(p.c2), wholeColorT(timeT, p));
+			else col = p.c1.on ? slotRgb(p.c1) : slotRgb(p.c2);
+			pushPoint(gear, gear.pen3[0], gear.pen3[1], gear.pen3[2], col);
+		}
+		for (var ci = 0; ci < gear.children.length; ci++) sample3(gear.children[ci], gear, phi, timeT);
 	}
 
 	// ---- period detection (whole-curve mode) ----
@@ -315,18 +467,46 @@
 		return true;
 	}
 
-	function collectHarmonics(roots) {
+	// 3D closure: frames are nested by two rotations per gear, so the whole
+	// chain repeats iff every relative rotation of a gear in a drawn subtree is
+	// a whole turn (rotations about tilted axes cannot cancel, unlike 2D). for
+	// each such gear we push three rates (in turns per root turn):
+	//   speed        - spin (gear centre orbits on this)
+	//   speed*ratio  - pen-frame spin incl. the extra roll; children mount in
+	//                  the pen frame, and the gear's own pen point uses it
+	//   speed2       - tilt / precession (the second axis)
+	// amplitudes are the radii those rotations drive, so the positional
+	// tolerance enforces angular closure. this is a sufficient condition
+	// (exactly what the frame physics needs for the whole mechanism to repeat).
+	function walkHarmonics3(g, parent) {
+		var ratio = parent ? (g.internal ? (parent.r - g.r) / g.r : (parent.r + g.r) / g.r) : 1;
+		var draws = !!(g.pencil.c1.on || g.pencil.c2.on);
+		for (var i = 0; i < g.children.length; i++) draws = walkHarmonics3(g.children[i], g) || draws;
+		if (!draws) return false;
+		if (parent) pushHarm(Math.abs(g.speed), Math.abs(g.internal ? parent.r - g.r : parent.r + g.r));
+		if (g.pencil.c1.on || g.pencil.c2.on || g.children.length) {
+			pushHarm(Math.abs(g.speed * ratio), Math.max(g.pencil.d, 0.01));
+		}
+		pushHarm(Math.abs(g.speed2 || 0), 1);
+		return true;
+	}
+
+	function collectHarmonics(roots, is3D) {
 		harmF.length = 0; harmA.length = 0;
-		for (var i = 0; i < roots.length; i++) walkHarmonics(roots[i], null, 0);
+		for (var i = 0; i < roots.length; i++) {
+			if (is3D) walkHarmonics3(roots[i], null);
+			else walkHarmonics(roots[i], null, 0);
+		}
 	}
 
 	// smallest u (in turns) that closes the figure within `tol` world units.
 	// `exact` = closed within tolerance, `err` = worst residual gap. always
-	// answers: the caller never has to refuse to draw.
-	function detectPeriod(roots, maxTurns, tol) {
+	// answers: the caller never has to refuse to draw. is3D uses the two-axis
+	// frame closure (see walkHarmonics3); 2D uses the positional harmonics.
+	function detectPeriod(roots, maxTurns, tol, is3D) {
 		maxTurns = Math.max(1, Math.min(maxTurns || 2000, MAX_TURNS));
 		tol = tol || TOL_POS;
-		collectHarmonics(roots);
+		collectHarmonics(roots, is3D);
 		var m = harmF.length;
 		if (!m) return { turns: 1, P: TAU, exact: true, err: 0, maxTurns: maxTurns, harmonics: 0 };
 		var bestU = 1, bestErr = Infinity;
@@ -367,10 +547,20 @@
 		}
 	}
 
+	// whole-curve sampler dispatcher: 3D uses nested-frame sample3, 2D uses the
+	// planar sampleAt. timeT = phi/P is the curve progress used by color flow.
+	function sampleAtAll(roots, phi, invP, is3D) {
+		if (is3D) for (var r = 0; r < roots.length; r++) sample3(roots[r], null, phi, phi * invP);
+		else for (var k = 0; k < roots.length; k++) sampleAt(roots[k], null, 0, 0, 0, phi, invP);
+	}
+
 	// prepare a resumable bake job over [0, P]. rings are cleared and grown to
-	// the exact size needed once, so stepping never reallocates.
-	function startWhole(roots, period, sampleCount) {
+	// the exact size needed once, so stepping never reallocates. is3D samples
+	// nested-frame poses (sample3) into stride-6 rings; otherwise planar.
+	function startWhole(roots, period, sampleCount, is3D) {
 		var all = flatten(roots);
+		// rings must already be at the target stride (main switches on setDim);
+		// clearTrace keeps geometry/dimension but empties the trace.
 		for (var i = 0; i < all.length; i++) clearTrace(all[i]);
 		// keep room for the inclusive endpoint (phi = P == phi = 0 location) so
 		// the curve's start point is never evicted by the closing sample.
@@ -379,7 +569,7 @@
 			if (all[j].pencil.c1.on || all[j].pencil.c2.on) ensureRing(all[j], sampleCount + 1, true);
 		}
 		return {
-			roots: roots, period: period, total: sampleCount, i: 0,
+			roots: roots, period: period, total: sampleCount, i: 0, is3D: !!is3D,
 			dphi: period.P / sampleCount, invP: 1 / period.P, done: false
 		};
 	}
@@ -389,8 +579,7 @@
 		if (job.done) return true;
 		var end = Math.min(job.total, job.i + budget - 1);
 		for (var s = job.i; s <= end; s++) {
-			var phi = s * job.dphi;
-			for (var r = 0; r < job.roots.length; r++) sampleAt(job.roots[r], null, 0, 0, 0, phi, job.invP);
+			sampleAtAll(job.roots, s * job.dphi, job.invP, job.is3D);
 		}
 		job.i = end + 1;
 		if (job.i > job.total) job.done = true;
@@ -398,8 +587,8 @@
 	}
 
 	// blocking convenience wrapper (tests, node harness).
-	function computeWhole(roots, period, sampleCount) {
-		var job = startWhole(roots, period, sampleCount);
+	function computeWhole(roots, period, sampleCount, is3D) {
+		var job = startWhole(roots, period, sampleCount, is3D);
 		while (!stepWhole(job, 4096)) { }
 		return job;
 	}
@@ -414,17 +603,18 @@
 			if (!(g.pencil.c1.on || g.pencil.c2.on)) continue;
 			var n = g.count;
 			if (n < 1 || !g.ring) continue;
-			var denom = n - 1;
+			var denom = n - 1, st = g.stride;
 			var c1on = g.pencil.c1.on, c2on = g.pencil.c2.on;
 			for (var k = 0; k < n; k++) {
 				var idx = (g.head + k) % g.cap;
+				var o = idx * st;
 				var t = wholeColorT(denom > 0 ? k / denom : 0, g.pencil);
 				var col;
 				if (c1on && c2on) col = mixHue(slotRgb(g.pencil.c1), slotRgb(g.pencil.c2), t);
 				else col = c1on ? slotRgb(g.pencil.c1) : slotRgb(g.pencil.c2);
-				g.ring[idx * 5 + 2] = col[0];
-				g.ring[idx * 5 + 3] = col[1];
-				g.ring[idx * 5 + 4] = col[2];
+				g.ring[o + st - 3] = col[0];
+				g.ring[o + st - 2] = col[1];
+				g.ring[o + st - 1] = col[2];
 			}
 		}
 	}
@@ -556,6 +746,7 @@
 			return {
 				r: gear.r,
 				speed: gear.speed,
+				speed2: gear.speed2 || 0,
 				internal: gear.internal,
 				phase0: gear.phase0 || 0,
 				rot: gear.rot,
@@ -578,24 +769,12 @@
 		return g;
 	}
 
-	// default app-state (view toggles, bake options, mode).  one source of truth
-	// for "what does a fresh app look like"; used by reset, by legacy-file fallback
-	// (anything missing in the scene falls back to this), and by deserialization
-	// sanity defaults.
+	// default app-state (view toggles, bake options, mode). the schema,
+	// defaults and clamps live in js/settings.js (single source of truth);
+	// this thin wrapper stays so serialize's fallback and older callers keep
+	// working.
 	function defaultAppState() {
-		return {
-			mode: 'animate',
-			paused: false,
-			symmetry: false,
-			overlay: true,
-			maxPeriod: 2000,
-			samplesPerTurn: 200,
-			showCircles: true,
-			showDial: false,
-			showPoints: false,
-			glowPoints: false,
-			drawTrails: true
-		};
+		return Settings.defaultApp();
 	}
 
 	function serialize(roots, view, globalSpeed, colorMode, appState) {
@@ -617,24 +796,9 @@
 		}
 		var gs = obj.globalSpeed != null ? obj.globalSpeed : 1;
 		var cm = (obj.colorMode === 'cycles' || obj.colorMode === 'frequency') ? obj.colorMode : 'frequency';
-		var app = defaultAppState();
-		if (obj.app && typeof obj.app === 'object') {
-			if (obj.app.mode === 'animate' || obj.app.mode === 'whole') app.mode = obj.app.mode;
-			app.paused = !!obj.app.paused;
-			app.symmetry = !!obj.app.symmetry;
-			app.overlay = obj.app.overlay !== false;
-			// legacy files carry `periodThreshold` (the old skip-the-bake
-			// limit); it maps onto the closure-search ceiling.
-			var mp = obj.app.maxPeriod != null ? obj.app.maxPeriod : obj.app.periodThreshold;
-			if (typeof mp === 'number' && mp > 0) app.maxPeriod = Math.min(4000, Math.max(4, Math.round(mp)));
-			var sp = obj.app.samplesPerTurn;
-			if (typeof sp === 'number' && sp > 0) app.samplesPerTurn = Math.min(2000, Math.max(20, Math.round(sp)));
-			app.showCircles = obj.app.showCircles !== false;
-			app.showDial = !!obj.app.showDial;
-			app.showPoints = !!obj.app.showPoints;
-			app.glowPoints = !!obj.app.glowPoints;
-			app.drawTrails = obj.app.drawTrails !== false;
-		}
+		// sanitize/whitelist/clamp (incl. the legacy periodThreshold alias)
+		// is owned by js/settings.js - the single source of the app schema.
+		var app = Settings.sanitizeApp(obj.app || {});
 		for (var i = 0; i < roots.length; i++) initRuntime(roots[i], null);
 		return { roots: roots, view: view, globalSpeed: gs, colorMode: cm, app: app };
 	}
@@ -650,7 +814,12 @@
 		ensureRing: ensureRing,
 		applyTrailCap: applyTrailCap,
 		forEachSegment: forEachSegment,
+		setTreeStride: setTreeStride,
+		strideFor3D: strideFor3D,
 		update: update,
+		update3: update3,
+		pose3: pose3,
+		pose3All: function (root) { pose3All(root, null); },
 		stateAt: stateAt,
 		rationalize: rationalize,
 		detectPeriod: detectPeriod,

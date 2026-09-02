@@ -317,7 +317,114 @@
 - 06-review-branch-comparison.md: what main had, what the alternate arena
   branch had, and which side each merged piece came from.
 
+## done (0.5.7) - settings.js single source of truth
+- js/settings.js (new): LIMITS (maxPeriod 4..4000 step4 def2000,
+  samplesPerTurn 20..2000 step20 def200, trailCap 500..40000 step500 floor100
+  with a "must equal Gear.CAP" note), clamp(field,v), APP_SCHEMA (11 persisted
+  fields each with def/persist/get/clean/apply), defaultApp, sanitizeApp
+  (incl. the legacy periodThreshold alias), snapshotApp, applyApp, STORE_KEY.
+  publishes to window OR globalThis (node require) so gear.js can read it.
+- gear.js: defaultAppState() -> Settings.defaultApp(); deserialize's inline
+  app whitelist -> Settings.sanitizeApp(obj.app||{}).
+- main.js: dropped STORE_KEY (Settings.STORE_KEY at the two call sites);
+  persisted fields in the live App initializer are placeholders seeded by
+  Settings.applyApp(defaultApp(), App, GUI) in init(); setMaxPeriod /
+  setSamplesPerTurn / setTrailCap clamp via Settings.clamp; appState() and
+  applyAppState() deleted; sceneObject passes Settings.snapshotApp; reset /
+  loadObject / init go through Settings.applyApp.
+- gui.js: the max period / detail / trail length rows and the detail help cap
+  read Settings.LIMITS.
+- test/run.js: requires settings.js first; bound literals read from
+  Settings.LIMITS; new drift-guard test that the post-init live App matches
+  the schema defaults. 113 assertions.
+- pitfall fixed during implementation: settings.js recipes cannot close over
+  main.js's markDirty (separate classic-script scopes) - they call the public
+  App.markDirty(); default-on toggle coercion treats 0 as off (numeric false).
+
+## done (0.7.0) - true 3D generalization: two rotation axes per gear
+REWRITES 0.6 (the plane-sweep / global spin model was rejected by the user).
+- gear.js: each gear gains speed2 (per-gear tilt/precession, default 0),
+  rot2 (integrated tilt), and a 3D pose: f3 (9-float orientation frame,
+  columns e1/e2/e3), c3 (world sphere centre), pen3 (world pen point).
+  pose3() mounts the gear in its parent's PEN frame (root = world identity,
+  disc in XZ), spins about e2 (speed), tilts about the spun e1 (speed2),
+  places the sphere centre along e1, and rolls the pen frame an extra
+  rot*(ratio-1) about e2 before placing the pen. update3() animates the tree;
+  sample3() is the whole-mode counterpart; pose3All() seeds a pose at entry.
+  rings: stride 5 (x y rgb) in 2D, stride 6 (x y z rgb) in 3D - reallocRing
+  converts, setTreeStride switches + clears; pushPoint takes (x,y,z,col) or
+  (x,y,col); forEachSegment/recolorWhole are stride-aware. detectPeriod gets
+  an is3D closure: walkHarmonics3 pushes, per drawn-subtree gear, the spin
+  rate, tilt rate and pen-frame roll rate as unit/radius-weighted harmonics so
+  the nested frames repeat whole turns together. speed2 serializes.
+- main.js: frame() runs update3 and pushes pen3 (x,y,z) in 3D; setDim switches
+  stride + seeds poses; App.setGearSpeed2 (snaps in whole mode, mirrors under
+  symmetry, clears/re-bakes); snapSceneForWhole snaps speed2 on the same grid;
+  projectRing reads stored xyz; renderScene3D draws trails from the stride-6
+  rings and draws gears as SPHERE OUTLINES (a sphere silhouette is a screen
+  circle -> R.circle via sphereScreenRadius); orbitTarget/setOrbitGear pivot
+  the camera on the menu gear else the root; fit measures from that pivot;
+  scene save/load persist dim + camera (spinSpeed removed); w2s3D has a second
+  scratch so callers needing two points (hit test, sphere radius, dial) don't
+  clobber it.
+- gui.js: per-gear "tilt speed" slider in the 3D context menu; the global spin
+  row/refreshSpinRow/setSpinSpeed are gone; opening/closing a menu sets the
+  orbit gear.
+- camera3.js: unchanged math; header documents the nested-frame world and the
+  selected-gear orbit pivot (target is fed per frame by main).
+- tests: 161 checks. replaced the phaseRing/spinK/mode3D blocks with
+  nested-frame kinematics (speed2=0 reproduces 2D in (x,z), y=0; tilt lifts
+  y; two-axis bake closure gap; stride 5/6 switch + persistence).
+
+## done (0.6.0) - (REJECTED) 3D mode (polar two-speed + orbit camera)
+> superseded by 0.7.0 - the rotating-plane/global-spin model swept the flat
+> figure into a surface of revolution rather than giving each gear two axes.
+> the camera (camera3.js), depth buffer and stride/projection plumbing were
+> kept; the spin/phaseRing mechanics were removed.
+## _0.6 text below kept for history_
+
+- js/camera3.js (new, pure/node-guarded): mat4 lookAt/perspective/multiply
+  (row-major), orbit camera state {yaw,pitch,dist,target}, viewProj,
+  projectPoint (top-left-origin screen pixels, behind-near flagged + clamped),
+  orbitBy (pitch clamped to +-89deg, yaw wraps), dolly (exp scale clamped to
+  [0.05R,40R]), panBy (distance-scaled camera-plane pan), fitDist,
+  sanitizeCamera, lerpCam (fit ease).
+- gear.js: per-point phaseRing (parallel Float32Array allocated/copied by
+  reallocRing, written by pushPoint(gear,x,y,col,phase)); update/sampleAt take
+  rootRot (root's own rot is the spin clock, cached on gear._rrot);
+  detectPeriod(roots, maxTurns, tol, spinK) adds the plane-azimuth closure
+  harmonic |spinK*root.speed| per root so the baked 3D figure closes in
+  (x,y,z). 2D callers pass 0 -> byte-identical behavior.
+- render.js: R.depth(on) (DEPTH_TEST/depthMask); begin() disables depth and
+  clears it for the 2D path; the overlay FBO gets a DEPTH_COMPONENT24
+  renderbuffer (recreated in overlayResize, cleared in overlay.clear).
+- main.js: App.dim/spinSpeed/cam/autoRotate; planeTo3D/projectRing project
+  the trail into a reused projScratch (CAP*5) fed to the unchanged 2D draw
+  loops through a scratch gear under pushIdentity/popIdentity (no per-frame
+  closure); renderScene3D mirrors the 2D gesture/overlay/direct branches with
+  depth on for the trail and projected skeleton circles / dial / axes / pen
+  points (64-seg polylines, R.circle cannot draw an ellipse); fitRadius +
+  eased fit/reset camera; setDim/setSpinSpeed (snaps in whole mode)/
+  setAutoRotate/fitView; pointer split (left-drag orbit, right/mid + 2-finger
+  pan, wheel/pinch dolly, double-click/f fit, g toggle); hitGear3D on projected
+  centers; GESTURE_SEG_BUDGET_3D (projection cost); scene dim/spinSpeed/camera
+  saved top-level and restored on load (applyScene3D); reset returns to 2D.
+- gui.js: 2D/3D button pair + setDim; 3D panel section (spin speed,
+  auto-rotate, fit/reset camera) hidden in 2D with dim-specific help; spin row
+  becomes the discrete valid-position index slider in whole mode
+  (refreshSpinRow); per-gear context menu gains a 3D-only "view" quick row;
+  setSpinSpeed/setAutoRotate syncers.
+- index.html loads camera3.js after render.js; test/stub-dom.js loads it too
+  and gained replaceChild + a controllable sandbox timer queue (flushTimers)
+  so the debounced autosave is deterministic.
+- test/run.js: 157 assertions (camera3 math + clamps + sanitize, spin closure
+  term, phase ring, live 3D animate trail + whole 3D closure gap ~0, camera
+  controls, panel/menu 3D rows, 3D scene autosave round-trip). offline PNG
+  raster of a baked 3D scene shows the clean surface-of-revolution loom.
+
 ## next
-- 0.6-plan-3D.md (reviewed, amendments at the end of the file).
-- optional: chunked post-gesture overlay rebake if the release hitch ever
-  measures perceptible; world-space FBO for >zoom-1 quality bounds.
+- optional polish (from the 0.6 plan's future-work list): real near-plane
+  segment clipping (currently edge-clamped streaks when inside the figure),
+  camera inertia/momentum, screen-space XYZ gizmo / ground grid, perspective
+  line width (x 1/dist), per-gear spin, chunked post-gesture overlay rebake,
+  OBJ export of a whole-mode 3D ring.
