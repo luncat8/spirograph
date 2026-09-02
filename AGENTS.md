@@ -24,6 +24,10 @@ guidance for LLM agents
 	no internet links; vendor any lib as a local js file.
 	WebGL2 only, zero dependencies.
 
+## don't forget
+
+after gui changes if need - update save, load and reset
+
 ## files
 	implementation-log.txt - what is already done and next step for LLM agents
 	findings-pitfalls-skills.md - notes and pitfalls for LLM agents

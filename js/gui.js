@@ -13,6 +13,10 @@
 	var modeBtns = {};
 	var colorModeBtns = {};
 	var periodLine = null;
+	// checkbox refs so applyAppState() can sync the UI when a scene with a saved
+	// "app" state is loaded (or when the reset button restores defaults).
+	var checkboxRefs = {};
+	var sliderRefs = {};   // dit for range inputs
 	// reference into the open per-gear menu so refreshAnimMode() can relabel the
 	// anim-speed slider prefix after the global color mode changes.
 	var speedLabRefresh = null;
@@ -30,7 +34,7 @@
 		return e;
 	}
 
-	function sliderRow(label, min, max, step, value, onInput, snap) {
+	function sliderRow(label, min, max, step, value, onInput, snap, key) {
 		var wrap = el('div', 'row');
 		var lab = el('label', null, label + ' ');
 		var val = el('span', 'val', fmt(value));
@@ -46,12 +50,13 @@
 		lab.appendChild(inp);
 		lab.appendChild(val);
 		wrap.appendChild(lab);
+		if (key) sliderRefs[key] = { input: inp, val: val };
 		return wrap;
 	}
 
 	function fmt(v) { return (Math.round(v * 1000) / 1000).toString(); }
 
-	function checkboxRow(label, checked, onChange) {
+	function checkboxRow(label, checked, onChange, key) {
 		var wrap = el('div', 'row');
 		var lab = el('label', null, label);
 		var inp = document.createElement('input');
@@ -60,6 +65,7 @@
 		inp.addEventListener('change', function () { onChange(inp.checked); });
 		wrap.appendChild(lab);
 		wrap.appendChild(inp);
+		if (key) checkboxRefs[key] = inp;
 		return wrap;
 	}
 
@@ -107,6 +113,8 @@
 
 	function buildPanel() {
 		panel.innerHTML = '';
+		checkboxRefs = {};
+		sliderRefs = {};
 		var title = el('div', 'ptitle', 'Spirograph');
 		panel.appendChild(title);
 
@@ -120,7 +128,7 @@
 		panel.appendChild(sliderRow('anim speed', 0, 30, 0.01, app.globalSpeed, function (v) {
 			app.globalSpeed = v;
 			app.markDirty();
-		}));
+		}, null, 'globalSpeed'));
 
 		// trace mode: animate / whole (exclusive switch)
 		var modeWrap = el('div', 'btns');
@@ -151,14 +159,14 @@
 
 		panel.appendChild(checkboxRow('bake full figure (overlay)', app.overlay.on, function (v) {
 			app.setOverlay(v);
-		}));
+		}, 'overlay'));
 
 		// view toggles (independent checkboxes, combinable)
-		panel.appendChild(checkboxRow('circles', app.showCircles, function (v) { app.setShowCircles(v); }));
-		panel.appendChild(checkboxRow('dial', app.showDial, function (v) { app.setShowDial(v); }));
-		panel.appendChild(checkboxRow('draw trail', app.drawTrails, function (v) { app.setDrawTrails(v); }));
-		panel.appendChild(checkboxRow('points', app.showPoints, function (v) { app.setShowPoints(v); }));
-		panel.appendChild(checkboxRow('glow points', app.glowPoints, function (v) { app.setGlow(v); }));
+		panel.appendChild(checkboxRow('circles', app.showCircles, function (v) { app.setShowCircles(v); }, 'showCircles'));
+		panel.appendChild(checkboxRow('dial', app.showDial, function (v) { app.setShowDial(v); }, 'showDial'));
+		panel.appendChild(checkboxRow('draw trail', app.drawTrails, function (v) { app.setDrawTrails(v); }, 'drawTrails'));
+		panel.appendChild(checkboxRow('points', app.showPoints, function (v) { app.setShowPoints(v); }, 'showPoints'));
+		panel.appendChild(checkboxRow('glow points', app.glowPoints, function (v) { app.setGlow(v); }, 'glowPoints'));
 		panel.appendChild(el('div', 'help',
 			'Uncheck "draw trail" to hide the traced curve (points-only view).'));
 
@@ -167,7 +175,7 @@
 		panel.appendChild(el('div', 'sub', 'tree'));
 		panel.appendChild(checkboxRow('symmetry mode', app.symmetry, function (v) {
 			app.symmetry = v;
-		}));
+		}, 'symmetry'));
 		panel.appendChild(el('div', 'help',
 			'When ON, menu edits apply to every sibling at the same level. Add-sub-gear grows the whole level.'));
 		levelsHost = el('div', 'levels');
@@ -187,7 +195,7 @@
 		panel.appendChild(el('div', 'sub', 'whole mode'));
 		panel.appendChild(sliderRow('period threshold', 50, 2000, 50, app.periodThreshold, function (v) {
 			app.setPeriodThreshold(v);
-		}));
+		}, null, 'periodThreshold'));
 		panel.appendChild(el('div', 'help',
 			'Skip the bake when the period exceeds this many turns.'));
 
@@ -382,6 +390,26 @@
 		setPeriod: function (turns, capped) {
 			if (!periodLine) return;
 			periodLine.textContent = 'period: ' + turns + ' turn' + (turns === 1 ? '' : 's') + (capped ? ' (capped)' : '');
+		},
+		// ---- setters that sync a checkbox/range input with a saved app value ----
+		// called by App.applyAppState when loading a scene with a saved app bag
+		// (or by App.resetScene when restoring defaults). They update the DOM
+		// without re-firing the input handlers, then notify the App so the
+		// overlay/state is consistent.
+		setSymmetry: function (v) { if (checkboxRefs.symmetry) checkboxRefs.symmetry.checked = v; },
+		setOverlay: function (v) { if (checkboxRefs.overlay) checkboxRefs.overlay.checked = v; },
+		setShowCircles: function (v) { if (checkboxRefs.showCircles) checkboxRefs.showCircles.checked = v; },
+		setShowDial: function (v) { if (checkboxRefs.showDial) checkboxRefs.showDial.checked = v; },
+		setShowPoints: function (v) { if (checkboxRefs.showPoints) checkboxRefs.showPoints.checked = v; },
+		setGlow: function (v) { if (checkboxRefs.glowPoints) checkboxRefs.glowPoints.checked = v; },
+		setDrawTrails: function (v) { if (checkboxRefs.drawTrails) checkboxRefs.drawTrails.checked = v; },
+		setGlobalSpeed: function (v) {
+			var r = sliderRefs.globalSpeed; if (!r) return;
+			r.input.value = v; r.val.textContent = fmt(v);
+		},
+		setPeriodThreshold: function (v) {
+			var r = sliderRefs.periodThreshold; if (!r) return;
+			r.input.value = v; r.val.textContent = fmt(v);
 		},
 		// relabel the open menu's anim-speed slider prefix (color mode or trace
 		// mode changed while the menu is open).

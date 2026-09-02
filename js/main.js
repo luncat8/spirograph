@@ -307,10 +307,18 @@
 		for (var i = 0; i < App.roots.length; i++) Gear.initRuntime(App.roots[i], null);
 		App.view = { zoom: 1, pan: [0, 0] };
 		App.globalSpeed = 1;
+		GUI.setGlobalSpeed && GUI.setGlobalSpeed(1);
 		recomputeTransform();
 		rebuildAll();
 		applyColorMode();
 		GUI.closeMenu();
+		// restore every saved setting back to its default so reset is a full
+		// clean slate (symmetry/overlay/period threshold/view toggles/pause).
+		applyAppState(Gear.defaultAppState());
+		App.colorMode = defaultAnimMode(App.mode);
+		applyColorMode();
+		GUI.setColorMode(App.colorMode);
+		GUI.refreshAnimMode && GUI.refreshAnimMode();
 		afterSceneChange();
 		GUI.rebuildLevels();
 	};
@@ -493,7 +501,24 @@
 	};
 
 	function sceneObject() {
-		return Gear.serialize(App.roots, App.view, App.globalSpeed, App.colorMode);
+		return Gear.serialize(App.roots, App.view, App.globalSpeed, App.colorMode, appState());
+	}
+
+	// snapshot of the non-geometry app settings saved alongside the scene so
+	// reload / open-file reproduce exactly what the user had on screen.
+	function appState() {
+		return {
+			mode: App.mode,
+			paused: App.paused,
+			symmetry: App.symmetry,
+			overlay: App.overlay.on,
+			periodThreshold: App.periodThreshold,
+			showCircles: App.showCircles,
+			showDial: App.showDial,
+			showPoints: App.showPoints,
+			glowPoints: App.glowPoints,
+			drawTrails: App.drawTrails
+		};
 	}
 
 	function serialize() {
@@ -539,17 +564,83 @@
 		return (agree && mode) ? mode : defaultAnimMode(App.mode);
 	}
 
+	// push a saved app-state bag into the live App. applies mode/colorMode via the
+	// existing setters only when they actually differ (those setters bake / clear
+	// traces, so calling them on a no-op would be wasted work); other toggles
+	// just write the field and sync the checkbox/range without re-firing the
+	// input handler. The caller is responsible for the post-load afterSceneChange
+	// (loadObject / init / resetScene), so we never double-bake.
+	function applyAppState(s) {
+		if (!s) return;
+		if ((s.mode === 'animate' || s.mode === 'whole') && App.mode !== s.mode) {
+			App.setMode(s.mode);
+		} else if ((s.mode === 'animate' || s.mode === 'whole') && App.mode === s.mode) {
+			GUI.setMode(App.mode);
+			GUI.setColorMode(App.colorMode);
+		}
+		if (typeof s.paused === 'boolean' && App.paused !== s.paused) {
+			App.paused = s.paused;
+			GUI.setPaused(App.paused);
+		}
+		if (typeof s.symmetry === 'boolean' && App.symmetry !== s.symmetry) {
+			App.symmetry = s.symmetry;
+			GUI.setSymmetry && GUI.setSymmetry(App.symmetry);
+		}
+		if (typeof s.overlay === 'boolean' && App.overlay.on !== s.overlay) {
+			App.overlay.on = s.overlay;
+			if (App.overlay.on) App.invalidateOverlay();
+			GUI.setOverlay && GUI.setOverlay(App.overlay.on);
+			markDirty();
+		}
+		if (typeof s.periodThreshold === 'number' && App.periodThreshold !== s.periodThreshold) {
+			App.periodThreshold = s.periodThreshold;
+			GUI.setPeriodThreshold && GUI.setPeriodThreshold(App.periodThreshold);
+		}
+		if (typeof s.showCircles === 'boolean' && App.showCircles !== s.showCircles) {
+			App.showCircles = s.showCircles; GUI.setShowCircles && GUI.setShowCircles(App.showCircles); markDirty();
+		}
+		if (typeof s.showDial === 'boolean' && App.showDial !== s.showDial) {
+			App.showDial = s.showDial; GUI.setShowDial && GUI.setShowDial(App.showDial); markDirty();
+		}
+		if (typeof s.showPoints === 'boolean' && App.showPoints !== s.showPoints) {
+			App.showPoints = s.showPoints; GUI.setShowPoints && GUI.setShowPoints(App.showPoints); markDirty();
+		}
+		if (typeof s.glowPoints === 'boolean' && App.glowPoints !== s.glowPoints) {
+			App.glowPoints = s.glowPoints; GUI.setGlow && GUI.setGlow(App.glowPoints); markDirty();
+		}
+		if (typeof s.drawTrails === 'boolean' && App.drawTrails !== s.drawTrails) {
+			App.drawTrails = s.drawTrails;
+			GUI.setDrawTrails && GUI.setDrawTrails(App.drawTrails);
+			markDirty();
+		}
+	}
+
 	function loadObject(obj) {
 		var d = Gear.deserialize(obj);
 		App.roots = d.roots;
 		App.view = d.view;
 		App.globalSpeed = d.globalSpeed;
+		GUI.setGlobalSpeed && GUI.setGlobalSpeed(App.globalSpeed);
 		App.colorMode = colorModeFromScene(d);
 		rebuildAll();
 		applyColorMode();
 		GUI.closeMenu();
 		GUI.setColorMode(App.colorMode);
 		recomputeTransform();
+		// applyAppState may set the mode (which auto-sets colorMode to the mode
+		// default). Restore the saved colorMode AFTER if it was an explicit field
+		// and the scene agrees with the (possibly newly-set) mode. Whole-mode
+		// always renders with cycles semantics regardless of the saved flag, so
+		// we honor the saved value in animate mode only.
+		var savedColorMode = (obj && obj.colorMode === 'cycles') ? 'cycles'
+			: (obj && obj.colorMode === 'frequency') ? 'frequency' : null;
+		applyAppState(d.app);
+		if (savedColorMode && App.mode === 'animate') {
+			App.colorMode = savedColorMode;
+			applyColorMode();
+			GUI.setColorMode(App.colorMode);
+			GUI.refreshAnimMode && GUI.refreshAnimMode();
+		}
 		afterSceneChange();
 		GUI.rebuildLevels();
 	}
@@ -1097,6 +1188,7 @@
 		// restore autosave, else default.js (SETTINGS module next to index.html),
 		// else the built-in default scene.
 		var restored = null;
+		var initApp = Gear.defaultAppState();
 		try {
 			var raw = localStorage.getItem(STORE_KEY);
 			if (raw) restored = Gear.deserialize(JSON.parse(raw));
@@ -1107,6 +1199,7 @@
 			App.view = restored.view;
 			App.globalSpeed = restored.globalSpeed;
 			App.colorMode = colorModeFromScene(restored);
+			initApp = restored.app;
 		} else if (window.SETTINGS && window.SETTINGS.gears && window.SETTINGS.gears.length) {
 			try {
 				var d = Gear.deserialize(window.SETTINGS);
@@ -1114,6 +1207,7 @@
 				App.view = d.view;
 				App.globalSpeed = d.globalSpeed;
 				App.colorMode = colorModeFromScene(d);
+				initApp = d.app;
 			} catch (e2) {
 				App.roots = Gear.defaultScene();
 				for (var i = 0; i < App.roots.length; i++) Gear.initRuntime(App.roots[i], null);
@@ -1127,6 +1221,11 @@
 
 		GUI.init(App);
 		GUI.setAutosave(App.autosaveOK);
+		GUI.setGlobalSpeed && GUI.setGlobalSpeed(App.globalSpeed);
+		// restore the saved app-state (view toggles, mode, etc.). order matters:
+		// GUI.init must run first so the setters exist; mode/colorMode before
+		// afterSceneChange so the post-load bake uses the right trace mode.
+		applyAppState(initApp);
 
 		computeLayout();
 		window.addEventListener('resize', computeLayout);

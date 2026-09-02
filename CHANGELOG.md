@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## 0.5.1
+- scene save/load now carries every view-state setting, so a saved scene
+  reproduces exactly what the user had on screen: trace mode (animate/whole),
+  paused state, symmetry, bake-full-figure overlay, period threshold, and all
+  view toggles (circles, dial, points, glow points, draw trail). old files
+  without an `app` block fall back to defaults. the reset button (and 'x')
+  restores the default scene AND every saved setting back to its factory value,
+  so reset is now a full clean slate.
+- panel checkboxes/sliders keep internal refs so load + reset can sync them
+  without re-firing the input handlers.
+
 ## 0.5.0
 - gear-tree level sliders (lvl 1..N) in the panel: every parent at a depth
   gets exactly N children placed at i*360/N degrees; new siblings deep-clone

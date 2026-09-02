@@ -439,12 +439,32 @@
 		return g;
 	}
 
-	function serialize(roots, view, globalSpeed, colorMode) {
+	// default app-state (view toggles, bake options, mode).  one source of truth
+	// for "what does a fresh app look like"; used by reset, by legacy-file fallback
+	// (anything missing in the scene falls back to this), and by deserialization
+	// sanity defaults.
+	function defaultAppState() {
+		return {
+			mode: 'animate',
+			paused: false,
+			symmetry: false,
+			overlay: true,
+			periodThreshold: 2000,
+			showCircles: true,
+			showDial: false,
+			showPoints: false,
+			glowPoints: false,
+			drawTrails: true
+		};
+	}
+
+	function serialize(roots, view, globalSpeed, colorMode, appState) {
 		return {
 			gears: roots.map(serializeGear),
 			view: { zoom: view.zoom, pan: [view.pan[0], view.pan[1]] },
 			globalSpeed: globalSpeed,
-			colorMode: colorMode || 'frequency'
+			colorMode: colorMode || 'frequency',
+			app: appState || defaultAppState()
 		};
 	}
 
@@ -457,8 +477,22 @@
 		}
 		var gs = obj.globalSpeed != null ? obj.globalSpeed : 1;
 		var cm = (obj.colorMode === 'cycles' || obj.colorMode === 'frequency') ? obj.colorMode : 'frequency';
+		var app = defaultAppState();
+		if (obj.app && typeof obj.app === 'object') {
+			if (obj.app.mode === 'animate' || obj.app.mode === 'whole') app.mode = obj.app.mode;
+			app.paused = !!obj.app.paused;
+			app.symmetry = !!obj.app.symmetry;
+			app.overlay = obj.app.overlay !== false;
+			var pt = obj.app.periodThreshold;
+			if (typeof pt === 'number' && pt > 0) app.periodThreshold = Math.min(2000, Math.max(50, pt));
+			app.showCircles = obj.app.showCircles !== false;
+			app.showDial = !!obj.app.showDial;
+			app.showPoints = !!obj.app.showPoints;
+			app.glowPoints = !!obj.app.glowPoints;
+			app.drawTrails = obj.app.drawTrails !== false;
+		}
 		for (var i = 0; i < roots.length; i++) initRuntime(roots[i], null);
-		return { roots: roots, view: view, globalSpeed: gs, colorMode: cm };
+		return { roots: roots, view: view, globalSpeed: gs, colorMode: cm, app: app };
 	}
 
 	var Gear = {
@@ -482,7 +516,8 @@
 		mixHue: mixHue,
 		pencilColor: pencilColor,
 		serialize: serialize,
-		deserialize: deserialize
+		deserialize: deserialize,
+		defaultAppState: defaultAppState
 	};
 
 	root.Gear = Gear;

@@ -174,6 +174,47 @@
   updates across applyLevel/removeGear, autosave roundtrip (rot + trailCap),
   reset levels, resetScene, default.js boot, legacy scene defaults.
 
+## done (0.5.1) — save/load carries view-state, reset is full clean slate
+- new top-level `app` field in the scene schema (mode, paused, symmetry, overlay,
+  periodThreshold, showCircles/Dial/Points, glowPoints, drawTrails). legacy
+  files without an `app` block fall back to Gear.defaultAppState().
+- js/gear.js: Gear.defaultAppState() (one source of truth for the factory bag);
+  Gear.serialize takes an extra appState arg; Gear.deserialize clones the
+  defaults then overlays any present fields with type validation (mode enum,
+  periodThreshold clamped to 50..2000, booleans for the rest, no throw on garbage
+  — invalid types fall back to defaults). exposed on the Gear export.
+- js/main.js: App.appState() snapshots the live App; new applyAppState(s) is the
+  single restore path — mode/colorMode go through the existing setters
+  (whole-mode recompute / recolor / clear-traces), the rest write the field
+  directly and call GUI.setX to sync the checkbox/range without re-firing the
+  input handler. App.resetScene now also calls applyAppState(defaults) + sets
+  colorMode to the mode default + pushes globalSpeed back to 1 (panel slider
+  synced). loadObject syncs the globalSpeed slider too. init() reads
+  `restored.app` / `window.SETTINGS` app and calls applyAppState after GUI.init
+  so the setters exist.
+- js/gui.js: checkboxRow / sliderRow gain an optional `key` that stores the
+  live DOM input into checkboxRefs / sliderRefs. buildPanel clears them.
+  GUI exports setSymmetry, setOverlay, setShowCircles, setShowDial,
+  setShowPoints, setGlow, setDrawTrails, setGlobalSpeed, setPeriodThreshold.
+- validated: node --check on all four js files; roundtrip preserves all new
+  fields, legacy-file fallback yields defaults, invalid-type fields clamp to
+  defaults (e.g. periodThreshold 99999 -> 2000, mode 'bogus' -> 'animate').
+- review pass — fixed three regressions found while reading the change:
+  1) applyAppState was calling App.setMode on every load, which triggers
+     recomputeWhole/clearTraces; loadObject then ran afterSceneChange on top
+     — a second whole-bake per scene load. Now applyAppState only calls
+     setMode when the mode actually differs and skips redundant work on the
+     no-op path (same-mode + same-overlay + same-toggle). Caller still owns
+     the single afterSceneChange at the end of load.
+  2) App.setMode auto-resets colorMode to the mode default — that overwrote
+     a saved colorMode='frequency' in animate mode (and 'cycles' in whole).
+     loadObject now reads the explicit colorMode field off the scene and
+     re-applies it after applyAppState (whole mode ignores it, animate mode
+     honors it). Mode-default behavior unchanged for scenes without the field.
+  3) applyAppState wrote App.overlay.on directly without triggering an
+     invalidation — the first toggle from default would never rebake. Now it
+     calls invalidateOverlay + markDirty when the flag actually flips.
+
 ## next
 - 05-plan-3D.md (reviewed, amendments at the end of the file).
 - optional: chunked post-gesture overlay rebake if the release hitch ever
