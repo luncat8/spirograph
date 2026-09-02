@@ -33,10 +33,18 @@ the mechanism rather than a post-hoc lift.
 - **scene format:** per-gear `speed2` rides on the gears; top-level `dim` and
   `camera` persist (the old top-level `spinSpeed` is gone; legacy/`default.js`/
   autosave load and default to 2D with all tilts 0).
-- `test/run.js` - 161 headless checks: nested-frame kinematics, speed2=0
+- fixes: rosette spacing (360/N) survives adding gears mid-animation -
+  `cloneGear` now copies the template's accumulated `rot`/`rot2` so siblings
+  share an orbit angle (a fresh `rot=0` gear added beside spun-up ones no
+  longer clumps); added gear sub-trees get a full 3D pose. the orbit camera
+  pivot is a FIXED point set when a gear menu opens (its sphere centre at that
+  moment), not a per-frame chase, so the baked trail and the spheres stay in
+  the same transform while the gear animates.
+- `test/run.js` - 165 headless checks: nested-frame kinematics, speed2=0
   reproduces 2D in (x,z) with y=0, tilt lifts the pen out of plane, two-axis
   bake closure, stride 5/6 switch + save/load round-trip, per-gear tilt
-  slider, orbit-pivot menu behavior, plus all prior 2D/camera checks.
+  slider, orbit-pivot menu behavior, mid-animation rosette spacing (2D+3D) and
+  fixed pivot, plus all prior 2D/camera checks.
 
 ## 0.6.0 - (REJECTED) plane-spin surface of revolution
 > superseded by 0.7.0; kept in git history. the rotating-plane / global spin

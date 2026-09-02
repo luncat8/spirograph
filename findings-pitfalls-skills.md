@@ -153,4 +153,17 @@
   once (hit test centre+rim, sphere centre+radius, dial arms) must use the
   second scratch (w2s3DC) or read scalars immediately, else the 2nd projection
   overwrites the first and circles draw at the rim point.
+- rosette spacing breaks if siblings have DIFFERENT accumulated rotation. a
+  child's orbit angle = parent pen frame + phase0 + rot; the phase0 mounts are
+  i*2pi/N, so siblings only sit 360/N apart when their `rot` is equal. growing
+  a level mid-animation clones a template gear whose `rot` is large while a
+  fresh gear starts at 0 - cloneGear MUST copy src.rot (and src.rot2 in 3D) or
+  the new siblings clump together. phase0-only spreading works right after
+  reset (all rot 0), which is why the bug hid in the level-0 tests.
+- the 3D orbit target must be a FIXED world point set at selection, not a
+  per-frame chase of the moving gear: trails are baked incrementally into the
+  overlay assuming a stationary camera, so a target that drifts frame by frame
+  leaves the baked trail under stale matrices while the spheres use the live
+  one - the trail appears under a different transform than the spheres.
+  retarget the camera once when a gear menu opens / closes (and rebake).
 

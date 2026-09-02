@@ -819,7 +819,7 @@
 		update: update,
 		update3: update3,
 		pose3: pose3,
-		pose3All: function (root) { pose3All(root, null); },
+		pose3All: function (root, parent) { pose3All(root, parent || null); },
 		stateAt: stateAt,
 		rationalize: rationalize,
 		detectPeriod: detectPeriod,

@@ -402,20 +402,28 @@
 	};
 
 	// ---- 3D mode API ----
-	// the orbit pivot: the open menu's gear, else the nearest root's centre.
-	// called each frame the camera is used (cheap; returns the live target into
-	// App.cam.target so the camera follows the selected gear as it animates).
-	function orbitTarget(out) {
+	// the orbit pivot is a FIXED world point set when the user selects a gear
+	// (its sphere centre at that moment), else the root centre (the origin).
+	// it must NOT chase the gear frame-by-frame: the trail overlay is baked
+	// incrementally under a stationary-camera assumption, and a moving target
+	// would smear that baked trail while the spheres use the live camera - the
+	// trail would appear in a different transform than the spheres.
+	function pivotOut(out) {
 		var g = App.orbitGear;
-		if (!g || App.allGears.indexOf(g) < 0) {
-			g = App.roots && App.roots[0] ? App.roots[0] : null;
-			App.orbitGear = g;
-		}
-		if (g) { out[0] = g.c3[0]; out[1] = g.c3[1]; out[2] = g.c3[2]; }
+		if (g && App.allGears.indexOf(g) >= 0) { out[0] = g.c3[0]; out[1] = g.c3[1]; out[2] = g.c3[2]; }
 		else { out[0] = 0; out[1] = 0; out[2] = 0; }
 		return out;
 	}
-	App.setOrbitGear = function (g) { App.orbitGear = g || null; App.requestRender(); };
+	// point the orbit target at the given gear (or root) NOW, once. returns
+	// nothing; callers may pass the gear's c3. a repaint + overlay rebake follows.
+	function retargetCamera(g) {
+		App.orbitGear = (g && App.allGears.indexOf(g) >= 0) ? g : (App.roots[0] || null);
+		if (!App.cam) App.cam = Camera3.defaultCamera();
+		pivotOut(App.cam.target);
+		App.requestRender();
+		if (App.overlay.on) App.invalidateOverlay();
+	}
+	App.setOrbitGear = function (g) { retargetCamera(g); };
 
 	App.setDim = function (d) {
 		d = (d === '3d') ? '3d' : '2d';
@@ -428,12 +436,12 @@
 		if (d === '3d') {
 			// give every gear an initial 3D pose so spheres/pens draw even
 			// before the first animate tick (and while paused / in whole mode).
-			for (var r0 = 0; r0 < App.roots.length; r0++) Gear.pose3All(App.roots[r0]);
+			for (var r0 = 0; r0 < App.roots.length; r0++) Gear.pose3All(App.roots[r0], null);
 			App.cam = Camera3.sanitizeCamera(App.cam);
 			App.orbitGear = App.roots[0] || null;
 			camFitR = fitRadius();
 			App.cam.dist = Camera3.fitDist(camFitR);
-			orbitTarget(App.cam.target);
+			pivotOut(App.cam.target);
 			GUI.setDim && GUI.setDim('3d');
 			toast('3D: drag to orbit the selected gear, wheel to dolly, right/middle drag to pan, f to fit');
 		} else {
@@ -587,7 +595,7 @@
 	function cloneGear(src) {
 		var g = Gear.makeGear({
 			r: src.r, speed: src.speed, speed2: src.speed2 || 0, internal: src.internal,
-			phase0: src.phase0, trailCap: src.trailCap,
+			phase0: src.phase0, trailCap: src.trailCap, rot: src.rot,
 			pencil: {
 				d: src.pencil.d, width: src.pencil.width,
 				c1: { on: src.pencil.c1.on, color: src.pencil.c1.color },
@@ -595,6 +603,11 @@
 				animSpeed: src.pencil.animSpeed, animMode: src.pencil.animMode
 			}
 		});
+		// carry the accumulated tilt too (initRuntime resets rot2 to 0; it is
+		// re-asserted by makeChildFromTemplate after init). siblings must share
+		// the SAME accumulated rotation as their template, or the constant
+		// phase0 mount offsets (i*2pi/N) no longer space them evenly.
+		g.rot2 = src.rot2 || 0;
 		for (var i = 0; i < src.children.length; i++) g.children.push(cloneGear(src.children[i]));
 		return g;
 	}
@@ -618,6 +631,9 @@
 		child.phase0 = phase0;
 		parent.children.push(child);
 		Gear.initRuntime(child, parent);
+		// initRuntime zeroes the accumulated tilt; re-assert the template's so
+		// siblings tilt in phase too (rot was preserved by initRuntime).
+		if (template) child.rot2 = template.rot2 || 0;
 		// new sub-gear inherits the global color mode
 		child.pencil.animMode = App.colorMode;
 		// place the new gear so its live pose matches (2D planar update + a 3D
@@ -625,7 +641,9 @@
 		// parent's nested frame.
 		var anc = parent, carry = anc ? (anc.phase != null ? anc.phase : anc.rot) : 0;
 		Gear.update(child, parent, parent.cx, parent.cy, carry, 0, App.globalSpeed);
-		if (App.dim === '3d') Gear.pose3(child, parent);
+		// 3D: pose the whole added sub-tree (a clone may carry its own children);
+		// pose3All uses the parent link already wired by initRuntime.
+		if (App.dim === '3d') Gear.pose3All(child, parent);
 		return child;
 	}
 
@@ -901,8 +919,8 @@
 			App.orbitGear = App.roots[0] || null;
 			camFitR = fitRadius();
 			if (!obj || !obj.camera) App.cam.dist = Camera3.fitDist(camFitR);
-			for (var r1 = 0; r1 < App.roots.length; r1++) Gear.pose3All(App.roots[r1]);
-			orbitTarget(App.cam.target);
+			for (var r1 = 0; r1 < App.roots.length; r1++) Gear.pose3All(App.roots[r1], null);
+			pivotOut(App.cam.target);
 		} else {
 			App.cam = null; App.orbitGear = null;
 		}
@@ -1496,7 +1514,7 @@
 	// world-space bounding radius of the trail (or the sphere train fallback)
 	// measured from the orbit pivot, used to fit the camera frame.
 	function fitRadius() {
-		var piv = orbitTarget([0, 0, 0]);
+		var piv = pivotOut([0, 0, 0]);
 		var px = piv[0], py = piv[1], pz = piv[2];
 		var best = 0, any = false;
 		for (var i = 0; i < App.allGears.length; i++) {
@@ -1529,7 +1547,7 @@
 		camFitR = fitRadius();
 		var to = Camera3.cloneCamera(App.cam);
 		to.dist = Camera3.fitDist(camFitR);
-		orbitTarget(to.target);
+		pivotOut(to.target);
 		if (!keepAngle) { to.yaw = Math.PI / 2; to.pitch = 0.3; }
 		camEase = { from: Camera3.cloneCamera(App.cam), to: to, t0: nowMs(), dur: 300 };
 		viewDirty = true;
@@ -1697,9 +1715,8 @@
 		if (!App.cam) App.cam = Camera3.defaultCamera();
 		ensureProjBuffer();
 		Camera3.setViewport(App.size * App.dpr, App.size * App.dpr);
-		// the camera orbits the selected gear's centre (else the root's): keep
-		// the live pivot in the target so it follows the gear as it animates.
-		if (App.cam) orbitTarget(App.cam.target);
+		// the orbit target is a fixed pivot set at selection (retargetCamera);
+		// do not chase the moving gear here or the baked trail desyncs.
 		Camera3.viewProj(matM, App.cam, App.size * App.dpr, App.size * App.dpr);
 
 		if (!App.drawTrails) {

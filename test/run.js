@@ -595,6 +595,54 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	App.resetScene();
 })();
 
+// ---- rosette spacing holds when gears are added mid-animation ---------
+(function rosetteAfterMidAnimGrowth() {
+	function gaps(ang) {
+		var d = ang.map(function (a) { return a * 180 / Math.PI; }).sort(function (a, b) { return a - b; });
+		var g = [];
+		for (var i = 0; i < d.length; i++) { var x = d[(i + 1) % d.length] - d[i]; if (i === d.length - 1) x += 360; g.push(x); }
+		return g;
+	}
+	for (var dim = 0; dim < 2; dim++) {
+		var is3 = dim === 1;
+		App.resetScene();
+		if (is3) App.setDim('3d');
+		w.tick(300, 16);                 // let gears accumulate rot first
+		App.applyLevel(1, 3);            // grow siblings mid-animation
+		w.tick(5, 16);
+		var p = App.roots[0], kids = p.children;
+		var e1 = p.f3;
+		var ang = kids.map(function (g) {
+			if (!is3) return Math.atan2(g.cy - p.cy, g.cx - p.cx);
+			var dx = g.c3[0] - p.c3[0], dy = g.c3[1] - p.c3[1], dz = g.c3[2] - p.c3[2];
+			return Math.atan2(dx * e1[6] + dy * e1[7] + dz * e1[8], dx * e1[0] + dy * e1[1] + dz * e1[2]);
+		});
+		var g = gaps(ang);
+		ok(g.length === 3 && g.every(function (x) { return Math.abs(x - 120) < 2; }),
+			(is3 ? '3D' : '2D') + ' siblings added mid-animation stay 360/N apart', g.map(function (x) { return x.toFixed(0); }).join(','));
+	}
+	App.setDim('2d');
+	App.resetScene();
+})();
+
+// ---- 3D orbit pivot stays fixed while a menu is open (trail sync) -----
+(function orbitPivotFixedWhileMenuOpen() {
+	App.resetScene();
+	App.setDim('3d');
+	w.tick(60, 16);
+	var kid = App.roots[0].children[0];
+	w.GUI.openMenu(kid, 50, 50);
+	var t0 = App.cam.target.slice();
+	w.tick(300, 16);                 // animate a lot; pivot must not chase the gear
+	var t1 = App.cam.target.slice();
+	ok(Math.hypot(t1[0] - t0[0], t1[1] - t0[1], t1[2] - t0[2]) < 1e-9,
+		'orbit camera target is fixed while a gear menu is open', Math.hypot(t1[0] - t0[0], t1[1] - t0[1], t1[2] - t0[2]).toExponential(2));
+	w.GUI.closeMenu();
+	ok(App.orbitGear === App.roots[0], 'closing the menu returns the pivot to the root');
+	App.setDim('2d');
+	App.resetScene();
+})();
+
 // ---- max period is a ceiling, not a target ---------------------------
 (function maxPeriodCeiling() {
 	App.resetScene();
