@@ -35,3 +35,6 @@ after gui changes if need - update save, load and reset
 	js/main.js - init, loop
 	js/gear.js - gear math
 	js/gui.js - context menu, sliders
+	test/run.js - headless checks (node test/run.js), boots the real app on
+	  DOM/WebGL stubs from test/stub-dom.js
+	test/preview.js - offline PNG render of a bake (no browser needed)

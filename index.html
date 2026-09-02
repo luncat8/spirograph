@@ -26,7 +26,9 @@
 		width: auto; max-width: 300px; padding: 12px; border-radius: 10px;
 		background: #131a26e6; border: 1px solid #243044;
 		backdrop-filter: blur(6px);
+		max-height: calc(100vh - 20px); overflow-y: auto;
 	}
+	.levels { margin-top: 4px; }
 	#panel.ptitle, .ptitle { font-weight: 600; margin-bottom: 8px; color: #fff; }
 	.row { margin: 5px 0; }
 	.row label { display: flex; align-items: center; gap: 6px; color: #9fb0c8; }
@@ -61,7 +63,8 @@
 	}
 	#toast.show { opacity: 1; }
 	@media (max-aspect-ratio: 1/1) {
-		#panel { top: 8px; left: 8px; right: 8px; width: auto; transform: none; }
+		#panel { top: 8px; left: 8px; right: 8px; width: auto; transform: none;
+			max-height: 46vh; }
 	}
 </style>
 </head>

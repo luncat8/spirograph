@@ -215,6 +215,73 @@
      invalidation — the first toggle from default would never rebake. Now it
      calls invalidateOverlay + markDirty when the flag actually flips.
 
+## done (0.6.0) - review pass over the 04-plan implementation (level sliders,
+## period detection); cross-checked against the alternate arena branch
+- js/gear.js:
+  - `phase0` model field (makeGear/serializeGear/initRuntime) folded into the
+    frame inside stateAt: `base = carry + phase0`, used by BOTH the orbit angle
+    and the pen angle, so a sibling is a rigid rotation of the same figure in
+    animate AND whole mode. the previous rot-based spacing failed three ways
+    (reparametrization only, per-frame drift, wiped by rot = speed*phi in the
+    sampler) - that was the "lvl >= 4 broken" report.
+  - lazy rings: makeGear stores `cap`, initRuntime leaves ring = null,
+    reallocRing/ensureRing/applyTrailCap grow by doubling up to trailCap and
+    shrink when the cap is lowered. pushPoint lost its `limit` argument (the
+    whole bake now sizes the ring up front instead of overriding the cap).
+  - detectPeriod rewritten: collectHarmonics walks only the sub-trees that
+    actually draw and pushes (frequency, amplitude) pairs for every orbit and
+    pen term; the scan returns the smallest u with
+    max |frac(f*u)| * 2pi * amp <= 0.0015 world units, else the best u found
+    ({turns, P, exact, err, harmonics}).
+  - startWhole / stepWhole / computeWhole: the bake is a resumable job
+    (computeWhole is now just the blocking wrapper used by tests).
+  - hue2rgb hoisted out of hslToRgb (closure per colored sample), dead
+    gcd/lcm/mixRGB dropped, defaultAppState carries `maxPeriod` (legacy
+    `periodThreshold` is accepted and mapped).
+- js/main.js:
+  - gearsAtDepth/depthOf/maxDepth/levelCount/subtreeSize replace the closure
+    walkTree helpers; levelCount returns 0 for an empty level.
+  - applyLevel(level, n) accepts n = 0 (empties the level + everything below),
+    clamps to 0..12, guards MAX_GEARS = 400, deep-clones the template
+    (cloneGear), re-spreads every kept child through spreadChildren (phase0),
+    closes an orphaned menu (syncMenu) and rebuilds the level rows.
+  - recomputeWhole starts a background job (WHOLE_SLICE_MS = 6 per frame,
+    draft at 1/4 resolution while dragging + refine 300 ms after the last
+    move), reports progress through GUI.setPeriod, never toasts / skips.
+    setMaxPeriod replaces setPeriodThreshold.
+  - whole-mode valid positions: SPEED_CHOICES (+-k/d, d <= 12) and
+    diameterChoices(gear) (rational multiples of the parent diameter);
+    snapSceneForWhole lands a scene on that grid once (mode switch / load /
+    reset).
+  - setGearRadius scales the sub-tree (ratios and period preserved);
+    applySymmetry mirrors geom/width/color/trail but never phase0;
+    addSubGear routes through applyLevel when symmetry is on; removeGear
+    re-spreads the remaining siblings.
+  - hot path + overlay bake now use the per-gear `g.cap` instead of Gear.CAP.
+  - the app-state bag (0.5.1) keeps working: `maxPeriod` replaces
+    `periodThreshold` in appState()/applyAppState, GUI.setMaxPeriod syncs the
+    slider, reset still restores every default.
+- js/gui.js:
+  - sliderRow gained an optional `values` list: the input becomes an index over
+    it (min 0, max n-1, step 1) so the handle can only land on a valid value -
+    used by the whole-mode speed and diameter rows. the old post-snap callback
+    is gone.
+  - lvl rows run 0..app.maxLevelN, are updated in place and skip the row that
+    currently has focus (never rebuilt under an active drag).
+  - whole-mode box: period readout (`~N turns (approx, gap x)` +
+    `- baking NN%`) and the `max period` slider; GUI.refreshMenu re-opens the
+    context menu when the trace mode changes.
+  - single `edit(gear, kind)` path (applySymmetry + onGearParam) for all 11
+    menu handlers.
+- index.html: sidebar scrolls (max-height + overflow-y, 46vh in portrait).
+- test/: stub-dom.js boots the REAL four files on DOM/WebGL stubs; run.js has
+  90 assertions (ring growth, closure scan incl. approximate answers, chunked
+  == blocking bake, phase0 rosette in both modes, levels 0..4 deep, gear
+  limit, symmetry, subtree scaling, background bake progress, trail cap,
+  context menu incl. the whole-mode index sliders, app-state roundtrip +
+  legacy mapping, panel lvl rows, non-blocking whole mode).
+  preview.js renders a bake to PNG offline.
+
 ## next
 - 05-plan-3D.md (reviewed, amendments at the end of the file).
 - optional: chunked post-gesture overlay rebake if the release hitch ever

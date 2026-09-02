@@ -9,10 +9,12 @@
 	var panel = null;
 	var autosaveLabel = null;
 	var currentGear = null;
+	var menuX = 0, menuY = 0;
 	var pauseBtn = null;
 	var modeBtns = {};
 	var colorModeBtns = {};
 	var periodLine = null;
+	var wholeBox = null;
 	// checkbox refs so applyAppState() can sync the UI when a scene with a saved
 	// "app" state is loaded (or when the reset button restores defaults).
 	var checkboxRefs = {};
@@ -34,22 +36,48 @@
 		return e;
 	}
 
-	function sliderRow(label, min, max, step, value, onInput, snap, key) {
+	function nearestIndex(list, v) {
+		var bi = 0, bestErr = Infinity;
+		for (var i = 0; i < list.length; i++) {
+			var e = Math.abs(list[i] - v);
+			if (e < bestErr) { bestErr = e; bi = i; }
+		}
+		return bi;
+	}
+
+	// a slider row. with `values` the input becomes an index over that list, so
+	// the handle can only land on a valid value (whole mode uses it for speed
+	// and diameter, where arbitrary reals mean an unclosable figure). snapping
+	// the value after the fact instead fights the drag and hides the grid.
+	function sliderRow(label, min, max, step, value, onInput, values, key) {
 		var wrap = el('div', 'row');
 		var lab = el('label', null, label + ' ');
 		var val = el('span', 'val', fmt(value));
 		var inp = document.createElement('input');
 		inp.type = 'range';
-		inp.min = min; inp.max = max; inp.step = step; inp.value = value;
-		inp.addEventListener('input', function () {
-			var v = parseFloat(inp.value);
-			if (snap) { v = snap(v); inp.value = v; }
-			val.textContent = fmt(v);
-			onInput(v);
-		});
+		if (values && values.length) {
+			inp.min = 0; inp.max = values.length - 1; inp.step = 1;
+			inp.value = nearestIndex(values, value);
+			val.textContent = fmt(values[nearestIndex(values, value)]);
+			inp.addEventListener('input', function () {
+				var v = values[parseInt(inp.value, 10)];
+				val.textContent = fmt(v);
+				onInput(v);
+			});
+		} else {
+			inp.min = min; inp.max = max; inp.step = step; inp.value = value;
+			inp.addEventListener('input', function () {
+				var v = parseFloat(inp.value);
+				val.textContent = fmt(v);
+				onInput(v);
+			});
+		}
 		lab.appendChild(inp);
 		lab.appendChild(val);
 		wrap.appendChild(lab);
+		wrap.input = inp;
+		wrap.valEl = val;
+		wrap.labelEl = lab;
 		if (key) sliderRefs[key] = { input: inp, val: val };
 		return wrap;
 	}
@@ -153,9 +181,19 @@
 		colorModeBtn('frequency', 'frequency');
 		panel.appendChild(cmWrap);
 
+		// whole-mode box: live period readout (with bake progress) + the
+		// closure-search ceiling. shown only in whole mode.
+		wholeBox = el('div');
 		periodLine = el('div', 'sub', '');
-		periodLine.style.display = 'none';
-		panel.appendChild(periodLine);
+		wholeBox.appendChild(periodLine);
+		wholeBox.appendChild(sliderRow('max period', 100, 20000, 100, app.maxPeriod, function (v) {
+			app.setMaxPeriod(v);
+		}, null, 'maxPeriod'));
+		wholeBox.appendChild(el('div', 'help',
+			'longest period the closure search may use. the figure is always drawn - ' +
+			'a period that does not close within the limit is marked approx and baked ' +
+			'in the background.'));
+		panel.appendChild(wholeBox);
 
 		panel.appendChild(checkboxRow('bake full figure (overlay)', app.overlay.on, function (v) {
 			app.setOverlay(v);
@@ -174,7 +212,7 @@
 		// child count, radially spaced; symmetry mirrors menu edits per level.
 		panel.appendChild(el('div', 'sub', 'tree'));
 		panel.appendChild(checkboxRow('symmetry mode', app.symmetry, function (v) {
-			app.symmetry = v;
+			app.setSymmetry(v);
 		}, 'symmetry'));
 		panel.appendChild(el('div', 'help',
 			'When ON, menu edits apply to every sibling at the same level. Add-sub-gear grows the whole level.'));
@@ -183,21 +221,14 @@
 		panel.appendChild(levelsHost);
 		var treeBtns = el('div', 'btns');
 		resetLevelsBtn = buttonRow('reset levels', function () {
-			var maxD = app.maxDepth(app.roots);
+			var maxD = app.maxDepth();
 			for (var l = 1; l <= maxD; l++) app.applyLevel(l, 1);
 		});
 		resetLevelsBtn.style.display = 'none';
 		treeBtns.appendChild(resetLevelsBtn);
 		panel.appendChild(treeBtns);
 		panel.appendChild(el('div', 'help',
-			'lvl k = uniform child count for every parent at that depth. Positions are i * 360/N degrees.'));
-
-		panel.appendChild(el('div', 'sub', 'whole mode'));
-		panel.appendChild(sliderRow('period threshold', 50, 2000, 50, app.periodThreshold, function (v) {
-			app.setPeriodThreshold(v);
-		}, null, 'periodThreshold'));
-		panel.appendChild(el('div', 'help',
-			'Skip the bake when the period exceeds this many turns.'));
+			'lvl N = children per parent at that level, placed at i * 360/N. 0 removes the level.'));
 
 		var sval = el('div', 'sub', 'scene');
 		panel.appendChild(sval);
@@ -220,21 +251,28 @@
 		rebuildLevels();
 	}
 
+	// lvl sliders run 0..maxLevelN: 0 empties the level (and everything below
+	// it), which is how a level is removed.
 	function makeLevelRow(L) {
-		var wrap = sliderRow('lvl ' + L, 1, 12, 1, 1, function (v) {
+		var wrap = sliderRow('lvl ' + L, 0, app.maxLevelN, 1, app.levelCount(L), function (v) {
 			app.applyLevel(L, v);
 		});
 		if (L > 1) wrap.classList.add('lvl-indent');
 		levelsHost.appendChild(wrap);
-		return { wrap: wrap, input: wrap.querySelector('input'), val: wrap.querySelector('.val') };
+		return { wrap: wrap, input: wrap.input, val: wrap.valEl };
 	}
 
+	// rows are added / removed in place as the tree grows or shrinks; the row
+	// the user is currently dragging is never recreated under the pointer
+	// (detaching an active range input releases pointer capture and kills the
+	// drag) and never overwritten mid-drag.
 	function rebuildLevels() {
 		if (!levelsHost) return;
-		var need = Math.max(1, app.maxDepth(app.roots) + 1);
+		var need = app.maxDepth() + 1;
 		while (levelRows.length > need) levelsHost.removeChild(levelRows.pop().wrap);
 		while (levelRows.length < need) levelRows.push(makeLevelRow(levelRows.length + 1));
 		for (var i = 0; i < levelRows.length; i++) {
+			if (document.activeElement === levelRows[i].input) continue;
 			var n = app.levelCount(i + 1);
 			levelRows[i].input.value = n;
 			levelRows[i].val.textContent = n;
@@ -281,6 +319,7 @@
 	function openMenu(gear, clientX, clientY) {
 		currentGear = gear;
 		menu.innerHTML = '';
+		var whole = app.mode === 'whole';
 		var title = el('div', 'ptitle drag');
 		title.appendChild(document.createTextNode(gear.parent ? 'Gear ' : 'Main gear '));
 		title.appendChild(document.createTextNode('\u2725 '));
@@ -288,37 +327,40 @@
 		menu.appendChild(title);
 
 		menu.appendChild(checkboxRow('internal (roll inside parent)', gear.internal, function (v) {
-			gear.internal = v; app.applySymmetry(gear, 'geom'); app.onGearParam(gear, 'geom');
+			gear.internal = v; edit(gear, 'geom');
 		}));
 
+		// diameter scales the sub-tree mounted on this gear, so gear ratios (and
+		// with them the period) survive the edit. in whole mode the reachable
+		// diameters are the rational multiples of the parent's.
 		menu.appendChild(sliderRow('diameter', 0.04, 2.0, 0.01, gear.r * 2, function (v) {
-			gear.r = v / 2; app.applySymmetry(gear, 'geom'); app.onGearParam(gear, 'geom');
-		}));
+			app.setGearRadius(gear, v / 2); edit(gear, 'geom');
+		}, whole ? app.diameterChoices(gear) : null));
 
 		menu.appendChild(sliderRow('speed', -1, 1, 0.01, gear.speed, function (v) {
-			gear.speed = v; app.applySymmetry(gear, 'geom'); app.onGearParam(gear, 'geom');
-		}, function (v) { return app.mode === 'whole' ? app.snapNice(v) : v; }));
+			gear.speed = v; edit(gear, 'geom');
+		}, whole ? app.speedChoices() : null));
 
 		menu.appendChild(sliderRow('pencil d', 0, 1, 0.01, gear.pencil.d, function (v) {
-			gear.pencil.d = v; app.applySymmetry(gear, 'geom'); app.onGearParam(gear, 'geom');
+			gear.pencil.d = v; edit(gear, 'geom');
 		}));
 
 		menu.appendChild(sliderRow('pencil width', 0.5, 12, 0.5, gear.pencil.width, function (v) {
-			gear.pencil.width = v; app.applySymmetry(gear, 'width'); app.onGearParam(gear, 'width');
+			gear.pencil.width = v; edit(gear, 'width');
 		}));
 
 		menu.appendChild(colorCheckRow('color 1', gear.pencil.c1.on, gear.pencil.c1.color,
-			function (v) { gear.pencil.c1.on = v; app.applySymmetry(gear, 'color'); app.onGearParam(gear, 'color'); },
-			function (v) { gear.pencil.c1.color = v; app.applySymmetry(gear, 'color'); app.onGearParam(gear, 'color'); }));
+			function (v) { gear.pencil.c1.on = v; edit(gear, 'color'); },
+			function (v) { gear.pencil.c1.color = v; edit(gear, 'color'); }));
 
 		menu.appendChild(colorCheckRow('color 2', gear.pencil.c2.on, gear.pencil.c2.color,
-			function (v) { gear.pencil.c2.on = v; app.applySymmetry(gear, 'color'); app.onGearParam(gear, 'color'); },
-			function (v) { gear.pencil.c2.color = v; app.applySymmetry(gear, 'color'); app.onGearParam(gear, 'color'); }));
+			function (v) { gear.pencil.c2.on = v; edit(gear, 'color'); },
+			function (v) { gear.pencil.c2.color = v; edit(gear, 'color'); }));
 
 		var speedRow = sliderRow('speed', 0, 4, 0.01, gear.pencil.animSpeed, function (v) {
-			gear.pencil.animSpeed = v; app.applySymmetry(gear, 'color'); app.onGearParam(gear, 'color');
+			gear.pencil.animSpeed = v; edit(gear, 'color');
 		});
-		var speedLab = speedRow.firstChild;
+		var speedLab = speedRow.labelEl;
 		// prefix follows the GLOBAL color mode (cycles/frequency panel toggle).
 		// in whole mode both formulas share the same slider value (hue cycles per
 		// closed period), so the prefix is identical regardless of color mode.
@@ -330,23 +372,14 @@
 		menu.appendChild(speedRow);
 
 		menu.appendChild(sliderRow('trail length', 500, Gear.CAP, 500, gear.trailCap, function (v) {
-			app.setTrailCap(gear, v);
-			app.applySymmetry(gear, 'trail');
-			app.onGearParam(gear, 'trail');
+			app.setTrailCap(gear, v); edit(gear, 'trail');
 		}));
 		menu.appendChild(el('div', 'help',
-			'soft cap on stored points per pencil (animate mode). period threshold is in the sidebar.'));
+			'soft cap on stored points per pencil. in whole mode it also bounds the bake resolution.'));
 
 		var gb = el('div', 'btns');
-		gb.appendChild(buttonRow('add sub-gear', function () {
-			// symmetry: add-sub-gear grows the whole level (every same-depth
-			// parent gains one child), instead of just this gear.
-			if (app.symmetry) {
-				var depth = app.depthOf(app.roots, gear);
-				if (depth >= 0) { app.applyLevel(depth + 1, gear.children.length + 1); return; }
-			}
-			app.addSubGear(gear);
-		}));
+		// symmetry ON: add-sub-gear grows the whole level (App.addSubGear routes it).
+		gb.appendChild(buttonRow('add sub-gear', function () { app.addSubGear(gear); }));
 		var rm = buttonRow('remove', function () { app.removeGear(gear); });
 		if (!gear.parent) rm.disabled = true;
 		gb.appendChild(rm);
@@ -359,8 +392,16 @@
 		var mh = menu.offsetHeight || 320;
 		var x = Math.min(clientX, window.innerWidth - mw - 8);
 		var y = Math.min(clientY, window.innerHeight - mh - 8);
-		menu.style.left = Math.max(8, x) + 'px';
-		menu.style.top = Math.max(8, y) + 'px';
+		menuX = Math.max(8, x); menuY = Math.max(8, y);
+		menu.style.left = menuX + 'px';
+		menu.style.top = menuY + 'px';
+	}
+
+	// one edit path: mirror to the level first (no-op when symmetry is off),
+	// then run the normal per-gear update.
+	function edit(gear, kind) {
+		app.applySymmetry(gear, kind);
+		app.onGearParam(gear, kind);
 	}
 
 	function closeMenu() {
@@ -382,14 +423,20 @@
 		setPaused: setPaused,
 		setMode: function (m) {
 			for (var key in modeBtns) modeBtns[key].classList.toggle('active', key === m);
-			if (periodLine) periodLine.style.display = (m === 'whole') ? '' : 'none';
+			if (wholeBox) wholeBox.style.display = (m === 'whole') ? '' : 'none';
 		},
 		setColorMode: function (m) {
 			for (var key in colorModeBtns) colorModeBtns[key].classList.toggle('active', key === m);
 		},
-		setPeriod: function (turns, capped) {
-			if (!periodLine) return;
-			periodLine.textContent = 'period: ' + turns + ' turn' + (turns === 1 ? '' : 's') + (capped ? ' (capped)' : '');
+		// live readout: exact vs approximate closure, plus background bake
+		// progress. never a modal / blocking toast - the figure keeps updating.
+		setPeriod: function (period, progress) {
+			if (!periodLine || !period) return;
+			var txt = 'period: ' + (period.exact ? '' : '~') + period.turns +
+				' turn' + (period.turns === 1 ? '' : 's');
+			if (!period.exact) txt += ' (approx, gap ' + period.err.toFixed(3) + ')';
+			if (progress != null && progress < 1) txt += ' - baking ' + Math.round(progress * 100) + '%';
+			periodLine.textContent = txt;
 		},
 		// ---- setters that sync a checkbox/range input with a saved app value ----
 		// called by App.applyAppState when loading a scene with a saved app bag
@@ -407,8 +454,8 @@
 			var r = sliderRefs.globalSpeed; if (!r) return;
 			r.input.value = v; r.val.textContent = fmt(v);
 		},
-		setPeriodThreshold: function (v) {
-			var r = sliderRefs.periodThreshold; if (!r) return;
+		setMaxPeriod: function (v) {
+			var r = sliderRefs.maxPeriod; if (!r) return;
 			r.input.value = v; r.val.textContent = fmt(v);
 		},
 		// relabel the open menu's anim-speed slider prefix (color mode or trace
@@ -416,6 +463,11 @@
 		refreshAnimMode: function () {
 			if (!currentGear) return;
 			if (speedLabRefresh) speedLabRefresh();
+		},
+		// rebuild the open menu in place (trace mode changed: whole mode swaps
+		// the continuous sliders for their valid-position variants).
+		refreshMenu: function () {
+			if (currentGear) openMenu(currentGear, menuX, menuY);
 		}
 	};
 

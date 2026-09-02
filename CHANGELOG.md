@@ -1,5 +1,53 @@
 # CHANGELOG
 
+## 0.6.0 - level/period fixes (review pass over the 04-plan implementation)
+- **lvl sliders start at 0.** 0 empties that level and everything below it,
+  which is how a level is removed; the range is 0..12 and a new slider appears
+  as soon as the level above holds gears, at any depth. a 400-gear guard blocks
+  a runaway `12 x 12 x 12` (toast, tree untouched).
+- **levels >= 2 fixed.** sibling spacing is now a real model field `phase0`
+  (serialized) that offsets the gear's whole *frame* - orbit, pen and the whole
+  sub-tree - instead of its `rot`:
+  - offsetting `rot` only reparametrizes one shared curve (all siblings draw
+    the same figure on top of each other - no rosette at all),
+  - `rot` is integrated per frame, so the offset drifted away, and
+  - the whole-mode sampler overwrites `rot` (rot = speed * phi), so the
+    spacing vanished entirely the moment the mode switched.
+  level templates are now deep-cloned (sub-tree included) too, so growing lvl 1
+  no longer produces childless siblings that break every deeper level.
+- **no more period popup.** period detection was an exact LCM of rationalized
+  speeds: discontinuous (0.2 -> 0.2001 turned 11 turns into 2000) and it
+  refused to draw above a threshold. it is now a closure scan over the figure's
+  rotating-vector harmonics for the smallest turn count whose worst
+  *positional* error stays under ~0.5 px, each frequency weighted by the radius
+  it drives. sub-millisecond, always answers: when nothing closes within the
+  limit the best candidate is drawn and the readout says
+  `~N turns (approx, gap ...)`. the `period threshold` slider is replaced by
+  `max period` (the search ceiling); legacy scenes map the old field onto it.
+- **whole mode bakes in the background.** the bake is a resumable job stepped
+  from the frame loop in ~6 ms slices and painted progressively
+  (`period: 132 turns - baking 47%`); dragging a slider bakes a quarter-res
+  draft and refines 300 ms after the last move. no freeze, no skipped update.
+- **whole-mode sliders only stop on valid positions**: `speed` steps through
+  +-k/d (d <= 12) and `diameter` through the rational multiples of the parent
+  diameter, both as *index* sliders (no silent post-snap fighting the drag).
+  entering whole mode snaps the scene onto that grid once, and the open context
+  menu is rebuilt when the mode changes.
+- resizing a gear now scales the sub-tree mounted on it, so gear ratios (and
+  with them the period) survive the edit and children never outgrow a shrunk
+  parent.
+- memory: pencil rings are allocated lazily and grow by doubling up to the
+  trail cap instead of a flat 800 KB per gear at scene load (a 144-gear tree
+  used to reserve ~115 MB before drawing anything). lowering `trail length`
+  gives the memory back.
+- fixes: `hslToRgb` allocated a closure per colored sample (per-frame hot
+  path); dead `gcd`/`lcm`/`mixRGB` removed; symmetry no longer mirrors
+  `phase0` (it is what makes the level a rosette); the sidebar scrolls when it
+  no longer fits the window.
+- `test/run.js` - 90 headless checks (gear math + the real app booted on
+  DOM/WebGL stubs), `test/preview.js` - offline PNG renderer for eyeballing a
+  bake without a browser.
+
 ## 0.5.1
 - scene save/load now carries every view-state setting, so a saved scene
   reproduces exactly what the user had on screen: trace mode (animate/whole),

@@ -8,8 +8,9 @@ draw hypotrochoid / epitrochoid curves in the browser. no build step.
 ## features summary
 
 	interactive parent-child gear tree, add / remove sub-gears
-	gear tree level sliders (lvl 1..N): every parent at a depth gets N children
-	  placed at i*360/N degrees; new siblings deep-clone the first child;
+	gear tree level sliders (lvl 1..N, starting at 0): every parent at a depth
+	  gets N children placed at i*360/N degrees; 0 removes the level and
+	  everything below it; new siblings deep-clone the template sub-tree;
 	  `reset levels` collapses the tree to a single chain
 	symmetry mode: context-menu edits mirror to every gear at the same level;
 	  add-sub-gear grows the whole level
@@ -17,9 +18,10 @@ draw hypotrochoid / epitrochoid curves in the browser. no build step.
 	  two color slots (each with its own enable checkbox) -> 0 colors = no pencil,
 	  1 color = static, 2 colors = animated blend between them
 	  global cycles/frequency color mode (auto per trace mode, user-overridable)
-	per-pencil trail length (soft cap on stored points, animate mode)
-	period threshold: whole-mode bakes whose period exceeds it are skipped
-	  with a toast instead of drawn seam-capped
+	per-pencil trail length (soft cap on stored points; rings grow lazily)
+	whole-curve mode with tolerance-based period detection, background
+	  (time-sliced) baking with a progress readout, and sliders that only stop
+	  on period-friendly values; `max period` sets the search ceiling
 	zoom / pan, pause, clear, reset to default scene
 	save scene as a .js file (rename to default.js for startup scene) / load
 	  .js or legacy .json (file or clipboard), autosave to localStorage
@@ -86,7 +88,8 @@ from this menu user can:
 	sliders: gear diameter and rotation speed -1...1
 	move slider of marker pencil position (distance from center of this gear)
 	slider of pencil line width
-	slider of trail length (max stored trail points, animate mode)
+	slider of trail length (max stored trail points; in whole mode it also
+	bounds the bake resolution)
 	two color slots, each with its own enable checkbox placed before the picker:
 		if none enabled  -> no pencil is drawn
 		if one enabled    -> static single color
@@ -100,13 +103,19 @@ the left panel has a `tree` section:
 	to all sibling gears at the same level (added/removed in sync)
 	lvl 1..N sliders - set how many children every parent at that depth has;
 	children are positioned evenly around their parent (i * 360/N degrees).
-	lvl k+1 appears once level k has sub-gears.
+	the slider range starts at 0: dragging a level to 0 empties it (and every
+	level below it), which is how a level is removed. lvl k+1 appears once
+	level k has sub-gears; a 400-gear guard blocks a runaway 12 x 12 x 12.
 	reset levels button - collapse every level to a single child
 
-and a `whole mode` section:
+and a `whole mode` section (visible in whole mode):
 
-	period threshold slider - a whole-mode bake whose detected period exceeds
-	this many turns is skipped (toast) instead of drawn with a seam cap
+	period readout - `period: 132 turns` (or `~132 turns (approx, gap ...)`
+	when nothing closes exactly), plus `- baking NN%` while the background
+	bake runs
+	max period slider - the ceiling of the closure search. the figure is
+	always drawn; a period that does not close within the limit is marked
+	approx instead of being skipped
 
 drag context menu using pointer. move by drag caption 'gear' label with unicode ico ✥ near it
 
@@ -130,6 +139,24 @@ draw modes:
 * animated draw similar to pencil using last N segments or FBO draw
 
 * calculate whole line and update interactively while move sliders. properly detect period and improve sliders to fit periods
+
+	period detection is a closure scan, not an exact LCM: the figure is a sum
+	of rotating vectors, and the app looks for the smallest number of turns `u`
+	where every harmonic `f` satisfies `|frac(f*u)| * 2pi * amplitude <= ~0.5px`.
+	that is continuous in the parameters (a hair-thin diameter change no longer
+	multiplies the period by 100), bounded in cost, and always answers: if
+	nothing closes within `max period`, the best candidate is drawn and the
+	readout marks it `~N turns (approx)`.
+
+	the bake itself is a resumable job stepped from the frame loop in ~6ms
+	slices, so the UI never freezes and the figure appears progressively.
+	while a slider is dragged a quarter-resolution draft is baked and refined
+	once the drag stops.
+
+	in this mode `speed` and `diameter` are index sliders over the discrete set
+	of values that keep the period short (speed = +-k/d with d <= 12, diameter =
+	a rational multiple of the parent diameter), so every reachable position is
+	a valid one.
 
 * without circles but only 'dial' lines from center. look how it draw it - it visually good looks
 
@@ -193,7 +220,8 @@ wraps the same object in a SETTINGS js module so a saved scene can be renamed to
 colors are hex strings, parsed to rgb floats internally for webgl, example:
 
 	{
-	  "gears": [ { "r": 0.6, "speed": 0.2, "internal": false, "rot": 0, "trailCap": 20000,
+	  "gears": [ { "r": 0.6, "speed": 0.2, "internal": false,
+	               "phase0": 0, "rot": 0, "trailCap": 20000,
 	               "pencil": { "d": 0.4, "width": 2,
 	                           "c1": { "on": true, "color": "#ff0000" },
 	                           "c2": { "on": false, "color": "#0000ff" },
@@ -204,9 +232,12 @@ colors are hex strings, parsed to rgb floats internally for webgl, example:
 	  "colorMode": "frequency"
 	}
 
-`rot` (orbit angle of the gear around its parent, radians) and `trailCap`
-(soft cap on stored trail points) are optional; legacy files without them
-default to 0 / 20000.
+`phase0` (constant mount offset of the gear around its parent, radians - what
+the level sliders use to build a rosette), `rot` (live orbit angle) and
+`trailCap` (soft cap on stored trail points) are optional; legacy files
+without them default to 0 / 0 / 20000. the `app` block additionally carries
+`maxPeriod` (legacy files may carry the old `periodThreshold`, which maps
+onto it).
 
 
 ### structure
@@ -225,6 +256,8 @@ default to 0 / 20000.
 	js/gear.js - gear math
 	js/render.js - webgl2 line drawing (shaders, buffers, MSAA)
 	js/gui.js - context menu, sliders
+	test/run.js - headless checks: `node test/run.js`
+	test/preview.js - offline PNG render of a bake: `node test/preview.js out.png`
 
 ### license
 

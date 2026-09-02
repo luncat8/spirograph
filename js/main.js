@@ -23,7 +23,7 @@
 		mode: 'animate',
 		colorMode: 'frequency',
 		symmetry: false,
-		periodThreshold: 2000,
+		maxPeriod: 2000,
 		showCircles: true,
 		showDial: false,
 		showPoints: false,
@@ -32,6 +32,15 @@
 		currentPeriod: null,
 		overlay: { on: true, invalid: true }
 	};
+
+	var TAU = Math.PI * 2;
+	var MAX_GEARS = 400;              // tree-size guard for the level sliders
+	var MAX_LEVEL_N = 12;             // max children per parent from a level slider
+	var SAMPLES_PER_TURN = 200;
+	var WHOLE_POINT_BUDGET = 1500000; // total stored whole-mode points, all pencils
+	var WHOLE_SLICE_MS = 6;           // per-frame time slice for the background bake
+	var WHOLE_CHUNK = 256;            // samples per step call inside that slice
+	var wholeJob = null;              // resumable Gear bake job (null = idle)
 
 	// hoisted renderer refs for the per-frame hot path (created once at init).
 	var Rseg = R.seg, Rflush = R.flush, Rdot = R.dot;
@@ -109,49 +118,60 @@
 	}
 
 	// ---- gear-tree helpers for level sliders + symmetry mode ----
-	// user-input time only (never per-frame), so the closure walk is fine.
-	function walkTree(roots, fn) {
-		for (var i = 0; i < roots.length; i++) {
-			(function walk(g, d) {
-				fn(g, d);
-				for (var k = 0; k < g.children.length; k++) walk(g.children[k], d + 1);
-			})(roots[i], 0);
-		}
+	// user-input time only (never per-frame).
+	function subtreeSize(g) {
+		var n = 1;
+		for (var i = 0; i < g.children.length; i++) n += subtreeSize(g.children[i]);
+		return n;
 	}
 
-	// deepest level that has any gears (0 = no sub-gears).
-	App.maxDepth = function (roots) {
-		var max = 0;
-		walkTree(roots, function (g, d) {
-			if (g.children.length > 0 && d + 1 > max) max = d + 1;
-		});
-		return max;
-	};
-
-	App.depthOf = function (roots, gear) {
-		var found = -1;
-		walkTree(roots, function (g, d) {
-			if (found < 0 && g === gear) found = d;
-		});
-		return found;
-	};
-
-	App.siblingsAtDepth = function (roots, depth) {
-		var out = [];
-		walkTree(roots, function (g, d) {
-			if (d === depth) out.push(g);
-		});
+	// every gear sitting exactly `depth` levels below the roots (depth 0 = roots).
+	function gearsAtDepth(depth, out) {
+		out = out || [];
+		var level = App.roots;
+		for (var d = 0; d < depth; d++) {
+			var next = [];
+			for (var i = 0; i < level.length; i++) {
+				for (var j = 0; j < level[i].children.length; j++) next.push(level[i].children[j]);
+			}
+			level = next;
+			if (!level.length) break;
+		}
+		for (var k = 0; k < level.length; k++) out.push(level[k]);
 		return out;
-	};
+	}
+	App.gearsAtDepth = gearsAtDepth;
 
-	// slider value for level L: child count of the first parent at depth L-1
-	// that has any children, else 1.
+	function depthOf(gear) {
+		var d = 0, g = gear;
+		while (g && g.parent) { g = g.parent; d++; }
+		return d;
+	}
+	App.depthOf = depthOf;
+
+	// deepest depth that still holds gears. 0 = roots only.
+	function maxDepth() {
+		var d = 0;
+		for (var i = 0; i < App.allGears.length; i++) {
+			var gd = depthOf(App.allGears[i]);
+			if (gd > d) d = gd;
+		}
+		return d;
+	}
+	App.maxDepth = maxDepth;
+
+	// slider value for level L: children per parent at that depth (max over the
+	// parents, so a hand-built asymmetric tree still shows the level exists).
+	// 0 is a legitimate value: the level is empty / does not exist.
 	App.levelCount = function (level) {
-		var parents = App.siblingsAtDepth(App.roots, level - 1);
-		for (var i = 0; i < parents.length; i++)
-			if (parents[i].children.length > 0) return parents[i].children.length;
-		return 1;
+		var parents = gearsAtDepth(level - 1);
+		var n = 0;
+		for (var i = 0; i < parents.length; i++) {
+			if (parents[i].children.length > n) n = parents[i].children.length;
+		}
+		return n;
 	};
+	App.maxLevelN = MAX_LEVEL_N;
 
 	// ---- App API used by GUI ----
 	App.onGearGeom = function (gear) { clearSubtree(gear); markDirty(); if (App.overlay.on) App.invalidateOverlay(); };
@@ -182,22 +202,77 @@
 		if (App.overlay.on) App.invalidateOverlay();
 	};
 
-	// pick nearest of +-k/d for d in 1..12 (so whole-mode curves close neatly).
-	function snapNice(v) {
-		var best = v, bestErr = Infinity;
-		for (var den = 1; den <= 12; den++) {
+	// ---- whole-mode "valid positions" ----------------------------------
+	// a closed figure needs commensurable frequencies, so in whole mode the
+	// sliders do not move continuously: they step through the discrete set of
+	// values that keep the period short. speed -> +-k/d (d <= 12); diameter ->
+	// a rational multiple of the parent diameter (the ratio is what enters the
+	// rolling frequency). the slider itself is index-based over these lists, so
+	// every position the user can reach is a valid one - no silent post-snap
+	// that fights the drag.
+	function buildSpeedChoices(maxDen) {
+		var seen = {}, out = [];
+		for (var den = 1; den <= maxDen; den++) {
 			for (var num = 0; num <= den; num++) {
-				var cand = num / den;
-				if (cand > 1) continue;
-				var e1 = Math.abs(v - cand);
-				if (e1 < bestErr) { bestErr = e1; best = cand; }
-				var e2 = Math.abs(v + cand);
-				if (e2 < bestErr) { bestErr = e2; best = -cand; }
+				var v = num / den;
+				if (v > 1) continue;
+				var k = v.toFixed(6);
+				if (!seen[k]) { seen[k] = 1; out.push(v); if (v > 0) out.push(-v); }
 			}
+		}
+		out.sort(function (a, b) { return a - b; });
+		return out;
+	}
+	var SPEED_CHOICES = buildSpeedChoices(12);
+
+	// diameters reachable from a parent: parent diameter * q/p (p,q <= 8).
+	// the root has no parent, so it only needs a plain grid (scaling the root
+	// scales its whole subtree - see setGearRadius - so the period is unaffected).
+	function diameterChoices(gear) {
+		var out = [], seen = {}, i;
+		if (!gear.parent) {
+			for (i = 1; i <= 40; i++) out.push(i * 0.05);
+			return out;
+		}
+		var pd = gear.parent.r * 2;
+		for (var p = 1; p <= 8; p++) {
+			for (var q = 1; q <= 8; q++) {
+				var d = pd * q / p;
+				if (d < 0.04 || d > 2.0) continue;
+				var k = d.toFixed(5);
+				if (seen[k]) continue;
+				seen[k] = 1; out.push(d);
+			}
+		}
+		out.sort(function (a, b) { return a - b; });
+		return out;
+	}
+
+	function nearestChoice(list, v) {
+		var best = v, bestErr = Infinity;
+		for (var i = 0; i < list.length; i++) {
+			var e = Math.abs(list[i] - v);
+			if (e < bestErr) { bestErr = e; best = list[i]; }
 		}
 		return best;
 	}
+
+	function snapNice(v) { return nearestChoice(SPEED_CHOICES, v); }
 	App.snapNice = snapNice;
+	App.speedChoices = function () { return SPEED_CHOICES; };
+	App.diameterChoices = diameterChoices;
+
+	// snap the scene onto the whole-mode grid once (entering whole mode or
+	// loading a scene there). top-down, so each gear snaps against an
+	// already-snapped parent.
+	function snapSceneForWhole() {
+		function walk(g) {
+			g.speed = snapNice(g.speed);
+			if (g.parent) g.r = nearestChoice(diameterChoices(g), g.r * 2) / 2;
+			for (var i = 0; i < g.children.length; i++) walk(g.children[i]);
+		}
+		for (var i = 0; i < App.roots.length; i++) walk(App.roots[i]);
+	}
 
 	// after a structural scene change, whole mode must recompute (others just repaint).
 	function afterSceneChange() {
@@ -205,41 +280,90 @@
 		else { markDirty(); if (App.overlay.on) App.invalidateOverlay(); }
 	}
 
-	// snap every gear's speed to a low-denominator fraction so whole-mode curves
-	// close with a small, clean period (the default scene's raw 0.17/0.41 would
-	// otherwise need ~1100 turns). only mutates while in whole mode.
-	function snapAllSpeeds() {
-		for (var i = 0; i < App.allGears.length; i++)
-			App.allGears[i].speed = snapNice(App.allGears[i].speed);
+	// resolution of the bake: ~200 samples per turn, bounded by the ring size
+	// and by a global point budget so a 100-pencil tree cannot ask for 100 x
+	// 40k points.
+	function wholeSampleCount(period) {
+		var pencils = 0;
+		for (var i = 0; i < App.allGears.length; i++) {
+			var p = App.allGears[i].pencil;
+			if (p.c1.on || p.c2.on) pencils++;
+		}
+		var perGear = Math.floor(WHOLE_POINT_BUDGET / Math.max(1, pencils));
+		var n = Math.round(period.turns * SAMPLES_PER_TURN);
+		return Math.max(64, Math.min(n, perGear, Gear.CAP - 1));
 	}
 
+	// whole mode never blocks and never refuses to update: detection is a
+	// bounded closure scan (sub-millisecond) and the bake itself is a resumable
+	// job stepped from the frame loop in small time slices, so sliders stay
+	// responsive and the figure appears progressively instead of freezing the
+	// tab behind a "period too long" popup.
+	// while a slider is being dragged (recomputes closer than DRAFT_MS apart)
+	// the figure is baked at a quarter of the resolution and refined once the
+	// user stops moving.
+	var DRAFT_MS = 300;
+	var lastWholeStart = 0;
+	var refineTimer = 0;
+
 	App.recomputeWhole = function () {
+		wholeJob = null;
+		if (refineTimer) { clearTimeout(refineTimer); refineTimer = 0; }
 		if (App.mode !== 'whole') return;
-		snapAllSpeeds();
-		var period = Gear.detectPeriod(App.roots);
+		var now = Date.now();
+		var draft = (now - lastWholeStart) < DRAFT_MS;
+		lastWholeStart = now;
+		var period = Gear.detectPeriod(App.roots, App.maxPeriod);
 		App.currentPeriod = period;
-		if (period.turnsRaw > App.periodThreshold) {
-			toast('period ' + period.turnsRaw + ' > threshold ' + App.periodThreshold + ' (bake skipped)');
-			GUI.setPeriod(period.turnsRaw, period.capped);
-			return;
+		var n = wholeSampleCount(period);
+		if (draft) {
+			n = Math.max(64, Math.round(n / 4));
+			refineTimer = setTimeout(function () {
+				refineTimer = 0; lastWholeStart = 0; App.recomputeWhole();
+			}, DRAFT_MS + 20);
 		}
-		var sampleCount = Math.max(2, Math.min(Math.round(period.turns * 200), Gear.CAP));
-		Gear.computeWhole(App.roots, period, sampleCount);
-		if (App.overlay.on) App.invalidateOverlay();
-		else markDirty();
-		GUI.setPeriod(period.turns, period.capped);
+		wholeJob = Gear.startWhole(App.roots, period, n);
+		if (App.overlay.on) App.invalidateOverlay();   // clear once; the bake appends
+		App.requestRender();
+		GUI.setPeriod(period, 0);
 	};
 
-	App.setPeriodThreshold = function (v) {
-		App.periodThreshold = v;
+	function nowMs() {
+		return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+	}
+
+	// drive the background bake; called once per frame while a job is pending.
+	function stepWholeJob() {
+		var t0 = nowMs();
+		do { Gear.stepWhole(wholeJob, WHOLE_CHUNK); }
+		while (!wholeJob.done && nowMs() - t0 < WHOLE_SLICE_MS);
+		GUI.setPeriod(App.currentPeriod, wholeJob.i / (wholeJob.total + 1));
+		App.needsRender = true;
+		if (wholeJob.done) {
+			wholeJob = null;
+			markDirty();
+		}
+	}
+
+	// the closure search ceiling: how many turns detectPeriod may spend before
+	// it settles for the best approximate closure it found.
+	App.setMaxPeriod = function (v) {
+		App.maxPeriod = Math.max(100, Math.min(20000, Math.round(v)));
 		if (App.mode === 'whole') App.recomputeWhole();
 	};
+
+	// the open context menu may point at a gear a level change removed.
+	function syncMenu() {
+		var g = GUI.menuGear && GUI.menuGear();
+		if (g && App.allGears.indexOf(g) < 0) GUI.closeMenu();
+	}
 
 	App.onGearParam = function (gear, kind) {
 		if (kind === 'trail') {
 			// ring may have been trimmed: a bake that keeps evicted pixels is wrong
-			if (App.mode === 'animate' && App.overlay.on) App.invalidateOverlay();
-			else markDirty();
+			Gear.applyTrailCap(gear);
+			if (App.mode === 'whole') App.recomputeWhole();   // trail cap bounds the bake
+			else { if (App.overlay.on) App.invalidateOverlay(); markDirty(); }
 			return;
 		}
 		if (App.mode === 'whole') {
@@ -293,11 +417,17 @@
 		App.mode = m;
 		App.colorMode = defaultAnimMode(m);
 		applyColorMode();
-		if (m === 'whole') App.recomputeWhole();      // fills ring + bakes
-		else if (m === 'animate') App.clearTraces();   // fresh tracing
+		if (m === 'whole') {
+			snapSceneForWhole();                       // land on the valid grid once
+			App.recomputeWhole();                      // starts the background bake
+		} else {
+			wholeJob = null;
+			App.clearTraces();                         // fresh tracing
+		}
 		GUI.setMode(m);
 		GUI.setColorMode(App.colorMode);
 		GUI.refreshAnimMode && GUI.refreshAnimMode();
+		GUI.refreshMenu && GUI.refreshMenu();          // whole mode swaps in the valid-position sliders
 		markDirty();
 		if (App.overlay.on) App.invalidateOverlay();
 	};
@@ -319,50 +449,78 @@
 		applyColorMode();
 		GUI.setColorMode(App.colorMode);
 		GUI.refreshAnimMode && GUI.refreshAnimMode();
+		if (App.mode === 'whole') snapSceneForWhole();
 		afterSceneChange();
 		GUI.rebuildLevels();
 	};
 
-	// create one sub-gear of `parent`: deep-clone of `template` (the first
-	// sibling) or the classic add-sub-gear defaults, placed at orbit angle rot.
-	function makeChildFromTemplate(parent, template, rot) {
-		var opts;
-		if (template) {
-			opts = {
-				r: template.r,
-				speed: template.speed,
-				internal: template.internal,
-				trailCap: template.trailCap,
-				pencil: {
-					d: template.pencil.d,
-					width: template.pencil.width,
-					c1: { on: template.pencil.c1.on, color: template.pencil.c1.color },
-					c2: { on: template.pencil.c2.on, color: template.pencil.c2.color },
-					animSpeed: template.pencil.animSpeed,
-					animMode: template.pencil.animMode
-				}
-			};
-		} else {
-			opts = {
-				r: Math.max(0.05, parent.r * 0.45),
-				speed: 0.3,
-				internal: true,
-				pencil: { d: parent.r * 0.2, width: 2, c1: { on: true, color: '#ffffff' }, c2: { on: false, color: '#ff8a3d' } }
-			};
-		}
-		var child = Gear.makeGear(opts);
-		// new sub-gear inherits the global color mode
-		child.pencil.animMode = App.colorMode;
+	// deep clone of a gear, sub-tree included. a level template must carry its
+	// own children, otherwise growing lvl 1 produces childless clones and every
+	// deeper level goes asymmetric (the old shallow copy did exactly that).
+	function cloneGear(src) {
+		var g = Gear.makeGear({
+			r: src.r, speed: src.speed, internal: src.internal,
+			phase0: src.phase0, trailCap: src.trailCap,
+			pencil: {
+				d: src.pencil.d, width: src.pencil.width,
+				c1: { on: src.pencil.c1.on, color: src.pencil.c1.color },
+				c2: { on: src.pencil.c2.on, color: src.pencil.c2.color },
+				animSpeed: src.pencil.animSpeed, animMode: src.pencil.animMode
+			}
+		});
+		for (var i = 0; i < src.children.length; i++) g.children.push(cloneGear(src.children[i]));
+		return g;
+	}
+
+	// one recipe for every new sub-gear: clone of the level template (so a
+	// grown level stays symmetric, sub-trees included) or the plain defaults.
+	function makeChildFromTemplate(parent, template, phase0) {
+		var child = template ? cloneGear(template) : Gear.makeGear({
+			r: Math.max(0.05, parent.r * 0.45),
+			speed: 0.3,
+			internal: true,
+			pencil: { d: parent.r * 0.2, width: 2, c1: { on: true, color: '#ffffff' }, c2: { on: false, color: '#ff8a3d' } }
+		});
+		child.phase0 = phase0;
 		parent.children.push(child);
 		Gear.initRuntime(child, parent);
-		child.rot = rot;
-		Gear.update(child, parent, parent.cx, parent.cy, parent.phase != null ? parent.phase : parent.rot, 0, App.globalSpeed);
+		// new sub-gear inherits the global color mode
+		child.pencil.animMode = App.colorMode;
+		Gear.update(child, parent, parent.cx, parent.cy,
+			parent.phase != null ? parent.phase : parent.rot, 0, App.globalSpeed);
 		return child;
 	}
 
+	// spread a parent's children evenly: child i sits at i * 360/N degrees.
+	// phase0 is a real model field (serialized, honored by both the animate
+	// integrator and the whole-curve sampler), not a runtime-only nudge - an
+	// offset written into `rot` drifts away frame by frame and is wiped
+	// entirely by the whole-mode sampler (rot = speed * phi), which is why
+	// levels used to collapse onto a single gear.
+	function spreadChildren(parent) {
+		var kids = parent.children, n = kids.length;
+		for (var i = 0; i < n; i++) kids[i].phase0 = (i * TAU) / n;
+	}
+
+	function setChildCount(parent, n) {
+		var kids = parent.children;
+		if (n < kids.length) kids.length = n;
+		var template = kids[0] || null;
+		while (kids.length < n) makeChildFromTemplate(parent, template, 0);
+		spreadChildren(parent);
+	}
+
+	// symmetry ON grows the whole level (same as bumping its slider), OFF adds
+	// a single sub-gear to this parent only.
 	App.addSubGear = function (parent) {
-		var child = makeChildFromTemplate(parent, null, 0);
+		if (App.symmetry) {
+			App.applyLevel(depthOf(parent) + 1, parent.children.length + 1);
+			return;
+		}
+		var child = makeChildFromTemplate(parent, parent.children[0] || null, 0);
+		spreadChildren(parent);
 		rebuildAll();
+		applyColorMode();
 		afterSceneChange();
 		GUI.rebuildLevels();
 		var sc = w2s(child.cx, child.cy);
@@ -371,83 +529,97 @@
 			(sc.y / App.dpr) + App.canvas.getBoundingClientRect().top);
 	};
 
-	// set every parent at depth `level-1` to exactly n children, evenly spaced
-	// at i*360/n degrees. kept children are re-spaced too: rot drifts every
-	// frame, so only re-spacing keeps the level radially uniform (and makes
-	// N -> M -> N round-trip). re-spaced subtrees restart their traces.
+	// level slider: every parent at depth level-1 gets exactly n children,
+	// spread over i * 360/n degrees. n = 0 empties the level (and everything
+	// below it) - that is how a level is removed, which is why the sliders
+	// start at 0 instead of 1.
 	App.applyLevel = function (level, n) {
-		n = Math.max(1, Math.min(12, n | 0));
-		var parents = App.siblingsAtDepth(App.roots, level - 1);
-		if (parents.length === 0) return;
-		var changed = false;
+		n = Math.max(0, Math.min(MAX_LEVEL_N, Math.round(n)));
+		var parents = gearsAtDepth(level - 1);
+		if (!parents.length) return;
+		var add = 0;
 		for (var i = 0; i < parents.length; i++) {
-			var parent = parents[i];
-			var old = parent.children.length;
-			if (old === n) continue;
-			changed = true;
-			if (n < old) parent.children.length = n;
-			else {
-				var template = parent.children[0] || null;
-				for (var c = old; c < n; c++)
-					makeChildFromTemplate(parent, template, (c * 2 * Math.PI) / n);
-			}
-			for (var k = 0; k < parent.children.length; k++) {
-				var ch = parent.children[k];
-				var want = (k * 2 * Math.PI) / n;
-				if (ch.rot !== want) { ch.rot = want; clearSubtree(ch); }
-			}
+			var kids = parents[i].children;
+			if (n > kids.length) add += (n - kids.length) * (kids[0] ? subtreeSize(kids[0]) : 1);
 		}
-		if (!changed) return;
+		if (App.allGears.length + add > MAX_GEARS) {
+			toast('gear limit (' + MAX_GEARS + ') reached');
+			GUI.rebuildLevels();
+			return;
+		}
+		for (var j = 0; j < parents.length; j++) setChildCount(parents[j], n);
 		rebuildAll();
-		var mg = GUI.menuGear && GUI.menuGear();
-		if (mg && App.depthOf(App.roots, mg) < 0) GUI.closeMenu();
+		applyColorMode();
+		syncMenu();
 		afterSceneChange();
 		GUI.rebuildLevels();
 	};
 
-	// symmetry mode: mirror the edited gear's fields to every gear at the same
-	// depth. the caller's single onGearParam(gear, kind) then repaints /
-	// re-bakes everything — whole-mode recompute/recolor are tree-global, so
-	// one call covers the siblings as well.
+	// resizing a gear resizes what is mounted on it, so gear ratios (and with
+	// them the period) are preserved and children never end up bigger than a
+	// shrunk parent.
+	function scaleSubtree(gear, f) {
+		for (var i = 0; i < gear.children.length; i++) {
+			var c = gear.children[i];
+			c.r *= f;
+			c.pencil.d *= f;
+			scaleSubtree(c, f);
+		}
+	}
+
+	App.setGearRadius = function (gear, r) {
+		r = Math.max(0.01, r);
+		var old = gear.r;
+		gear.r = r;
+		if (old > 1e-9) scaleSubtree(gear, r / old);
+	};
+
+	// symmetry mode: mirror the edited gear's fields onto every gear at the
+	// same depth (phase0 is deliberately NOT mirrored - it is what makes the
+	// level a rosette). the caller's single onGearParam(gear, kind) then
+	// repaints / re-bakes everything: whole-mode recompute and recolor are
+	// tree-global, so one call covers the siblings too.
 	App.applySymmetry = function (gear, kind) {
 		if (!App.symmetry) return;
-		var depth = App.depthOf(App.roots, gear);
-		if (depth < 0) return;
-		var sibs = App.siblingsAtDepth(App.roots, depth);
+		var sibs = gearsAtDepth(depthOf(gear));
 		for (var i = 0; i < sibs.length; i++) {
 			var s = sibs[i];
 			if (s === gear) continue;
 			if (kind === 'geom') {
-				s.r = gear.r; s.speed = gear.speed; s.internal = gear.internal; s.pencil.d = gear.pencil.d;
-				if (App.mode !== 'whole') clearSubtree(s);
+				App.setGearRadius(s, gear.r);
+				s.speed = gear.speed;
+				s.internal = gear.internal;
+				s.pencil.d = gear.pencil.d;
 			} else if (kind === 'width') {
 				s.pencil.width = gear.pencil.width;
 			} else if (kind === 'color') {
-				s.pencil.c1 = { on: gear.pencil.c1.on, color: gear.pencil.c1.color, _rgb: null, _hex: null };
-				s.pencil.c2 = { on: gear.pencil.c2.on, color: gear.pencil.c2.color, _rgb: null, _hex: null };
+				s.pencil.c1.on = gear.pencil.c1.on; s.pencil.c1.color = gear.pencil.c1.color;
+				s.pencil.c2.on = gear.pencil.c2.on; s.pencil.c2.color = gear.pencil.c2.color;
 				s.pencil.animSpeed = gear.pencil.animSpeed;
+				s.pencil.animMode = gear.pencil.animMode;
 			} else if (kind === 'trail') {
 				App.setTrailCap(s, gear.trailCap);
 			}
+			if (App.mode !== 'whole' && (kind === 'geom' || kind === 'color')) clearSubtree(s);
 		}
+		if (sibs.length > 1 && App.overlay.on) App.invalidateOverlay();
 	};
 
-	// soft cap on stored trail points (animate mode). lowering it below the
-	// current count evicts the oldest points; whole mode never trims — the
-	// baked closed figure must stay complete.
+	App.setSymmetry = function (v) { App.symmetry = !!v; };
+
+	// soft cap on stored trail points. lowering it below the current count
+	// evicts the oldest points and hands the memory back.
 	App.setTrailCap = function (gear, v) {
-		gear.trailCap = Math.max(1, Math.min(v, Gear.CAP));
-		if (App.mode === 'animate' && gear.count > gear.trailCap) {
-			gear.head = (gear.head + gear.count - gear.trailCap) % Gear.CAP;
-			gear.count = gear.trailCap;
-		}
+		gear.trailCap = Math.max(100, Math.min(Math.round(v), Gear.CAP));
+		Gear.applyTrailCap(gear);
 	};
 
 	App.removeGear = function (gear) {
 		if (!gear.parent) return;
-		var sibs = gear.parent.children;
-		var idx = sibs.indexOf(gear);
-		if (idx >= 0) sibs.splice(idx, 1);
+		var parent = gear.parent;
+		var idx = parent.children.indexOf(gear);
+		if (idx >= 0) parent.children.splice(idx, 1);
+		spreadChildren(parent);
 		rebuildAll();
 		GUI.closeMenu();
 		afterSceneChange();
@@ -512,7 +684,7 @@
 			paused: App.paused,
 			symmetry: App.symmetry,
 			overlay: App.overlay.on,
-			periodThreshold: App.periodThreshold,
+			maxPeriod: App.maxPeriod,
 			showCircles: App.showCircles,
 			showDial: App.showDial,
 			showPoints: App.showPoints,
@@ -592,9 +764,9 @@
 			GUI.setOverlay && GUI.setOverlay(App.overlay.on);
 			markDirty();
 		}
-		if (typeof s.periodThreshold === 'number' && App.periodThreshold !== s.periodThreshold) {
-			App.periodThreshold = s.periodThreshold;
-			GUI.setPeriodThreshold && GUI.setPeriodThreshold(App.periodThreshold);
+		if (typeof s.maxPeriod === 'number' && App.maxPeriod !== s.maxPeriod) {
+			App.maxPeriod = s.maxPeriod;
+			GUI.setMaxPeriod && GUI.setMaxPeriod(App.maxPeriod);
 		}
 		if (typeof s.showCircles === 'boolean' && App.showCircles !== s.showCircles) {
 			App.showCircles = s.showCircles; GUI.setShowCircles && GUI.setShowCircles(App.showCircles); markDirty();
@@ -641,6 +813,7 @@
 			GUI.setColorMode(App.colorMode);
 			GUI.refreshAnimMode && GUI.refreshAnimMode();
 		}
+		if (App.mode === 'whole') snapSceneForWhole();
 		afterSceneChange();
 		GUI.rebuildLevels();
 	}
@@ -857,7 +1030,8 @@
 	// never trigger it; sparse thick traces keep their rounded joins.
 	function drawGearSegments(g, startK, endK, half) {
 		var ring = g.ring;
-		var cap = Gear.CAP;
+		if (!ring) return;
+		var cap = g.cap;
 		var head = g.head;
 		var n = g.count - 1;
 		var s = Math.max(0, startK), e = Math.min(endK, n);
@@ -928,7 +1102,8 @@
 		if (n <= 0) return;
 		var step = Math.max(1, Math.ceil(n / Math.max(1, perGearBudget)));
 		if (step <= 1) { drawGearSegments(g, 0, n, half); return; }
-		var cap = Gear.CAP, head = g.head, ring = g.ring;
+		if (!g.ring) return;
+		var cap = g.cap, head = g.head, ring = g.ring;
 		var panX = App.view.pan[0], panY = App.view.pan[1];
 		var S = App.S, cx0 = App.cx0, cy0 = App.cy0;
 		var lastIa = -1;
@@ -974,7 +1149,7 @@
 			testRing[i * 5 + 3] = 0.5 + 0.5 * Math.sin(t);
 			testRing[i * 5 + 4] = 0.8;
 		}
-		var fakeGear = { ring: testRing, head: 0, count: 0 };
+		var fakeGear = { ring: testRing, cap: TEST_CAP, head: 0, count: 0 };
 		var samples = [8000, 16000, 32000, 64000, 96000, 128000, 160000, 200000];
 		var bestUnder = 10000;   // floor: below this the decimated trace looks sparse
 		var MAX_SAFE = Math.floor(RmaxVert / 6) - 16;   // leave headroom for flush
@@ -1059,23 +1234,24 @@
 		for (var i = 0; i < App.allGears.length; i++) {
 			var g = App.allGears[i];
 			if (!(g.pencil.c1.on || g.pencil.c2.on)) continue;
+			if (g.count < 2) continue;
 			var half = Math.max(0.5, (g.pencil.width / 2) * App.dpr);
 			if (reset) {
-				if (g.count < Gear.CAP) {
+				if (g.count < g.cap) {
 					drawGearSegments(g, 0, g.count - 1, half);
 					g.drawn = g.count - 1;
 				} else {
-					drawGearSegments(g, 0, Gear.CAP - 1, half);
-					g.drawnNewestRing = (g.head + Gear.CAP - 1) % Gear.CAP;
+					drawGearSegments(g, 0, g.cap - 1, half);
+					g.drawnNewestRing = (g.head + g.cap - 1) % g.cap;
 				}
 			} else {
-				if (g.count < Gear.CAP) {
+				if (g.count < g.cap) {
 					drawGearSegments(g, g.drawn, g.count - 1, half);
 					g.drawn = g.count - 1;
 				} else {
-					var newest = (g.head + Gear.CAP - 1) % Gear.CAP;
+					var newest = (g.head + g.cap - 1) % g.cap;
 					if (newest !== g.drawnNewestRing) {
-						drawGearSegments(g, Gear.CAP - 2, Gear.CAP - 1, half);
+						drawGearSegments(g, g.cap - 2, g.cap - 1, half);
 						g.drawnNewestRing = newest;
 					}
 				}
@@ -1154,6 +1330,10 @@
 	function frame(now) {
 		var dt = last ? Math.min(0.05, (now - last) / 1000) : 0;
 		last = now;
+		// background whole-mode bake: a time-sliced chunk per frame. it runs
+		// even while paused (it is a computation, not an animation) and paints
+		// progressively, so the UI never blocks on a long period.
+		if (wholeJob) stepWholeJob();
 		if (!App.paused) {
 			App.time += dt;
 			if (App.mode === 'animate') {               // animate advances sim + trail
@@ -1244,6 +1424,9 @@
 
 		requestAnimationFrame(frame);
 	}
+
+	// debug / test handle: the node harness (test/run.js) drives the real App.
+	if (typeof window !== 'undefined') window.App = App;
 
 	if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
 	else init();

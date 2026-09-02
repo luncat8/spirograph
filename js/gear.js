@@ -4,8 +4,11 @@
 (function (root) {
 	'use strict';
 
-	var CAP = 40000;        // max stored trace points per pencil (ring buffer)
+	var CAP = 40000;        // hard ceiling of stored trace points per pencil
+	var MIN_RING = 2048;    // first lazy ring allocation (grows by doubling)
+	var DEF_TRAIL = 20000;  // default soft cap (gear.trailCap)
 	var EPS = 0.0009;      // min world-distance between stored trace points
+	var TAU = Math.PI * 2;
 
 	// normalize a pencil config (new or legacy) into the canonical shape:
 	// c1/c2 are color slots each with its own enable checkbox; the pencil draws
@@ -39,13 +42,23 @@
 		return p;
 	}
 
+	function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
 	function makeGear(opts) {
 		opts = opts || {};
 		return {
 			r: opts.r != null ? opts.r : 0.6,
 			speed: opts.speed != null ? opts.speed : 0.2,
 			internal: opts.internal != null ? opts.internal : false,
-			trailCap: opts.trailCap != null ? Math.max(1, Math.min(opts.trailCap, CAP)) : 20000,
+			// constant mount offset (radians): spreads the children of one
+			// parent evenly (i * 2pi / N) so a level forms a symmetric rosette.
+			// it is a phase, NOT integrated state: both `update` and the
+			// whole-curve sampler start from it, so animate and whole agree and
+			// the offset can never drift away (which is what an offset baked
+			// into `rot` did - see findings-pitfalls-skills.md).
+			phase0: opts.phase0 != null ? opts.phase0 : 0,
+			// soft cap on stored trace points; the ring grows lazily up to it.
+			trailCap: clamp(opts.trailCap != null ? opts.trailCap : DEF_TRAIL, 100, CAP),
 			pencil: normalizePencil(opts.pencil),
 			children: [],
 			// runtime (filled by initRuntime)
@@ -54,7 +67,7 @@
 			cx: 0, cy: 0,
 			penx: 0, peny: 0,
 			ratio: 1,
-			ring: null, head: 0, count: 0
+			ring: null, cap: 0, head: 0, count: 0
 		};
 	}
 
@@ -74,13 +87,59 @@
 	function initRuntime(gear, parent) {
 		gear.parent = parent || null;
 		if (gear.rot == null) gear.rot = 0;
-		gear.ring = new Float32Array(CAP * 5);
+		if (gear.phase0 == null) gear.phase0 = 0;
+		// rings are allocated on first use (see ensureRing): a 200-gear tree
+		// used to cost 200 * CAP * 5 floats (~160 MB) before drawing anything.
+		gear.ring = null;
+		gear.cap = 0;
 		gear.head = 0;
 		gear.count = 0;
 		gear.drawn = 0;
 		gear.drawnNewestRing = undefined;
 		gear.cx = 0; gear.cy = 0; gear.penx = 0; gear.peny = 0;
 		for (var i = 0; i < gear.children.length; i++) initRuntime(gear.children[i], gear);
+	}
+
+	// move the stored points into a fresh buffer of `cap` points (newest kept).
+	function reallocRing(gear, cap) {
+		var ring = new Float32Array(cap * 5);
+		var n = Math.min(gear.count, cap);
+		if (gear.ring && n > 0) {
+			var skip = gear.count - n;                 // keep the newest n points
+			for (var k = 0; k < n; k++) {
+				var si = (gear.head + skip + k) % gear.cap;
+				ring[k * 5] = gear.ring[si * 5];
+				ring[k * 5 + 1] = gear.ring[si * 5 + 1];
+				ring[k * 5 + 2] = gear.ring[si * 5 + 2];
+				ring[k * 5 + 3] = gear.ring[si * 5 + 3];
+				ring[k * 5 + 4] = gear.ring[si * 5 + 4];
+			}
+		}
+		gear.ring = ring;
+		gear.cap = cap;
+		gear.head = 0;
+		gear.count = n;
+		if (gear.drawn > n) gear.drawn = n;
+		gear.drawnNewestRing = undefined;              // ring indices moved
+	}
+
+	// grow the ring so it can hold at least `need` points (never above the
+	// gear's trailCap). rings start unallocated and double on demand.
+	function ensureRing(gear, need) {
+		var want = Math.min(need, gear.trailCap);
+		if (gear.cap >= want) return;
+		var cap = gear.cap || MIN_RING;
+		while (cap < want) cap *= 2;
+		if (cap > gear.trailCap) cap = gear.trailCap;
+		reallocRing(gear, cap);
+	}
+
+	// trailCap lowered: drop the oldest points and hand the memory back.
+	function applyTrailCap(gear) {
+		gear.trailCap = clamp(gear.trailCap, 100, CAP);
+		if (!gear.ring || gear.cap <= gear.trailCap) return;
+		reallocRing(gear, gear.trailCap);
+		gear.drawn = 0;
 	}
 
 	function clearTrace(gear) {
@@ -97,33 +156,33 @@
 
 	// push a pen sample (world position + rgb color baked at draw time) into the
 	// ring buffer; later color changes only affect new points, not existing line.
-	// `limit` overrides the soft trail cap (whole mode passes CAP so a closed
-	// figure is never trimmed to the animate trail length).
-	function pushPoint(gear, x, y, col, limit) {
-		var cap = limit != null ? limit : (gear.trailCap != null ? gear.trailCap : CAP);
-		if (gear.count === 0) {
-			gear.ring[0] = x; gear.ring[1] = y;
-			gear.ring[2] = col[0]; gear.ring[3] = col[1]; gear.ring[4] = col[2];
-			gear.head = 0; gear.count = 1;
-			return;
+	// the ring grows by doubling until trailCap, then evicts the oldest point.
+	function pushPoint(gear, x, y, col) {
+		if (gear.count > 0) {
+			var li = (gear.head + gear.count - 1) % gear.cap;
+			var dx = x - gear.ring[li * 5], dy = y - gear.ring[li * 5 + 1];
+			if (dx * dx + dy * dy < EPS * EPS) return;
 		}
-		var li = (gear.head + gear.count - 1) % CAP;
-		var lx = gear.ring[li * 5], ly = gear.ring[li * 5 + 1];
-		var dx = x - lx, dy = y - ly;
-		if (dx * dx + dy * dy < EPS * EPS) return;
-		var idx = (gear.head + gear.count) % CAP;
+		if (gear.count >= gear.cap) ensureRing(gear, gear.cap ? gear.cap * 2 : MIN_RING);
+		var idx;
+		if (gear.count < gear.cap) {
+			idx = (gear.head + gear.count) % gear.cap;
+			gear.count++;
+		} else {                                      // full at trailCap: drop oldest
+			idx = gear.head;
+			gear.head = (gear.head + 1) % gear.cap;
+		}
 		gear.ring[idx * 5] = x; gear.ring[idx * 5 + 1] = y;
 		gear.ring[idx * 5 + 2] = col[0]; gear.ring[idx * 5 + 3] = col[1]; gear.ring[idx * 5 + 4] = col[2];
-		if (gear.count < cap) gear.count++;
-		else gear.head = (gear.head + 1) % CAP;
 	}
 
 	// call cb(x0,y0,r0,g0,b0, x1,y1,r1,g1,b1) per consecutive segment (ring order, no wrap seam)
 	function forEachSegment(gear, cb) {
 		var n = gear.count;
+		if (!gear.ring) return;
 		for (var j = 0; j < n - 1; j++) {
-			var ia = (gear.head + j) % CAP;
-			var ib = (gear.head + j + 1) % CAP;
+			var ia = (gear.head + j) % gear.cap;
+			var ib = (gear.head + j + 1) % gear.cap;
 			cb(
 				gear.ring[ia * 5], gear.ring[ia * 5 + 1], gear.ring[ia * 5 + 2], gear.ring[ia * 5 + 3], gear.ring[ia * 5 + 4],
 				gear.ring[ib * 5], gear.ring[ib * 5 + 1], gear.ring[ib * 5 + 2], gear.ring[ib * 5 + 3], gear.ring[ib * 5 + 4]
@@ -135,7 +194,12 @@
 	// sampling so the two paths can never diverge). `carry` is the accumulated
 	// orbit phase inherited from ancestors.
 	function stateAt(gear, parent, pcx, pcy, carry, rot) {
-		var a = carry + rot;
+		// phase0 is a rigid mount offset: it rotates this gear's whole frame
+		// (orbit AND pen, and through the inherited carry its entire subtree)
+		// around the parent centre. adding it to `rot` instead would only slide
+		// the pen along the same curve - identical figure, no symmetry.
+		var base = carry + (gear.phase0 || 0);
+		var a = base + rot;
 		var cx, cy;
 		if (!parent) {
 			cx = 0; cy = 0;
@@ -150,7 +214,7 @@
 		// rolling spin (rot * ratio). the parent phase is added, NOT multiplied,
 		// otherwise counter-rotating gears would cancel the pen instead of letting
 		// it sweep a circle around the (then stationary) sub-gear center.
-		var penA = carry + rot * ratio;
+		var penA = base + rot * ratio;
 		return { cx: cx, cy: cy, ratio: ratio, penA: penA };
 	}
 
@@ -170,12 +234,25 @@
 	}
 
 	// ---- period detection (whole-curve mode) ----
-	function gcd(a, b) {
-		a = Math.abs(a | 0); b = Math.abs(b | 0);
-		while (b) { var t = b; b = a % b; a = t; }
-		return a || 1;
-	}
-	function lcm(a, b) { return (a / gcd(a, b)) * b; }
+	//
+	// every pen position is a sum of rotating vectors:
+	//   pen(g) = SUM over the ancestor chain of  orbitR_i * e^(i * f_i * phi)
+	//            + d_g * e^(i * fpen_g * phi)
+	// with all frequencies f measured in turns per unit phi (phi = 2*pi is one
+	// turn of the root). the figure repeats after u turns exactly when every
+	// f * u is an integer.
+	//
+	// exact rational arithmetic (LCM of the speed denominators) is brittle: a
+	// speed of 0.2001 instead of 0.2 explodes the period even though the two
+	// figures are indistinguishable, and a tiny far-out harmonic weighs as much
+	// as the dominant one. so we search for the smallest u whose worst
+	// *positional* closure error stays under a tolerance, weighting each
+	// frequency by the radius it drives:
+	//   err = |frac(f*u)| * 2*pi * amplitude   (world units)
+	// the scan is O(maxTurns * harmonics) with an early break on the first
+	// harmonic that cannot win, i.e. a fraction of a millisecond for normal
+	// scenes, and it degrades gracefully: if nothing closes within maxTurns we
+	// return the best u found instead of refusing to draw.
 
 	// continued-fraction rationalization of x -> {num, den} (den capped at maxDen).
 	function rationalize(x, maxDen) {
@@ -200,69 +277,132 @@
 		return { num: h, den: k };
 	}
 
-	// smallest integer u (in turns) making the whole figure periodic in phi.
-	// turnsRaw is the true LCM (before the MAX_TURNS cap) for the period
-	// threshold check in App.recomputeWhole.
-	var MAX_TURNS = 2000;
-	function detectPeriod(roots) {
-		var dens = [];
-		function walk(g, ratio) {
-			// every gear's own rotation term (speed) and its rolling term
-			// (speed*ratio) enter the closure sum of itself and ALL descendants,
-			// so collect both for every gear — not just pencil ones. skipping a
-			// non-pencil ancestor's speed*ratio term let compound figures close
-			// on the wrong (non-integer) period, leaving a visible seam.
-			dens.push(rationalize(g.speed).den);
-			dens.push(rationalize(g.speed * ratio).den);
-			for (var i = 0; i < g.children.length; i++) {
-				var c = g.children[i];
-				var cr = c.internal ? (g.r - c.r) / c.r : (g.r + c.r) / c.r;
-				walk(c, cr);
+	var MAX_TURNS = 20000;      // hard ceiling for the closure scan
+	var TOL_POS = 0.0015;       // closure tolerance in world units (~0.5 px @ zoom 1)
+
+	// harmonics of the current scene, rebuilt per detectPeriod call (user
+	// action, never the frame loop). parallel arrays: frequency + amplitude.
+	var harmF = [], harmA = [];
+
+	function pushHarm(f, amp) {
+		if (!isFinite(f) || !isFinite(amp)) return;
+		if (Math.abs(f) < 1e-9 || amp < 1e-6) return;    // static term: always closed
+		for (var i = 0; i < harmF.length; i++) {
+			if (Math.abs(harmF[i] - f) < 1e-12) {         // same frequency: keep the widest radius
+				if (amp > harmA[i]) harmA[i] = amp;
+				return;
 			}
 		}
-		for (var ri = 0; ri < roots.length; ri++) walk(roots[ri], 1);
-		var u = 1;
-		for (var i = 0; i < dens.length; i++) u = lcm(u, dens[i]);
-		var turnsRaw = u;
-		var capped = false;
-		if (u > MAX_TURNS) { u = MAX_TURNS; capped = true; }
-		return { u: u, P: 2 * Math.PI * u, turns: u, turnsRaw: turnsRaw, capped: capped };
+		harmF.push(f); harmA.push(amp);
 	}
 
-	// sample the full closed figure over [0, P] into every pencil ring.
-	function computeWhole(roots, period, sampleCount) {
-		var all = flatten(roots);
-		for (var i = 0; i < all.length; i++) clearTrace(all[i]);
-		// keep room for the inclusive endpoint (phi = P == phi = 0 location) so the
-		// curve's start point is never evicted from the ring by the closing sample.
-		sampleCount = Math.min(sampleCount, Gear.CAP - 1);
-		var dphi = period.P / sampleCount;
-		function sample(gear, parent, pcx, pcy, carry, phi) {
-			var rot = gear.speed * phi;
-			var st = stateAt(gear, parent, pcx, pcy, carry, rot);
-			gear.rot = rot;
-			gear.cx = st.cx; gear.cy = st.cy; gear.ratio = st.ratio;
-			gear.phase = st.penA;
-			gear.penx = st.cx + gear.pencil.d * Math.cos(st.penA);
-			gear.peny = st.cy + gear.pencil.d * Math.sin(st.penA);
-			if (gear.pencil.c1.on || gear.pencil.c2.on) {
-				var t = wholeColorT(phi / period.P, gear.pencil);
-				var col;
-				if (gear.pencil.c1.on && gear.pencil.c2.on) {
-					col = mixHue(slotRgb(gear.pencil.c1), slotRgb(gear.pencil.c2), t);
-				} else {
-					col = gear.pencil.c1.on ? slotRgb(gear.pencil.c1) : slotRgb(gear.pencil.c2);
+	// returns true when this subtree contributes to a drawn curve. only then do
+	// its rotations constrain the period (a hidden gear may spin at any rate).
+	function walkHarmonics(g, parent, carryF) {
+		var ratio = parent ? (g.internal ? (parent.r - g.r) / g.r : (parent.r + g.r) / g.r) : 1;
+		var orbitF = carryF + g.speed;
+		var penF = carryF + g.speed * ratio;
+		var draws = !!(g.pencil.c1.on || g.pencil.c2.on);
+		for (var i = 0; i < g.children.length; i++) {
+			if (walkHarmonics(g.children[i], g, penF)) draws = true;
+		}
+		if (!draws) return false;
+		if (parent) pushHarm(orbitF, Math.abs(g.internal ? parent.r - g.r : parent.r + g.r));
+		if (g.pencil.c1.on || g.pencil.c2.on) pushHarm(penF, g.pencil.d);
+		return true;
+	}
+
+	function collectHarmonics(roots) {
+		harmF.length = 0; harmA.length = 0;
+		for (var i = 0; i < roots.length; i++) walkHarmonics(roots[i], null, 0);
+	}
+
+	// smallest u (in turns) that closes the figure within `tol` world units.
+	// `exact` = closed within tolerance, `err` = worst residual gap. always
+	// answers: the caller never has to refuse to draw.
+	function detectPeriod(roots, maxTurns, tol) {
+		maxTurns = Math.max(1, Math.min(maxTurns || 2000, MAX_TURNS));
+		tol = tol || TOL_POS;
+		collectHarmonics(roots);
+		var m = harmF.length;
+		if (!m) return { turns: 1, P: TAU, exact: true, err: 0, maxTurns: maxTurns, harmonics: 0 };
+		var bestU = 1, bestErr = Infinity;
+		for (var u = 1; u <= maxTurns; u++) {
+			var worst = 0;
+			for (var i = 0; i < m; i++) {
+				var x = harmF[i] * u;
+				var e = Math.abs(x - Math.round(x)) * TAU * harmA[i];
+				if (e > worst) {
+					worst = e;
+					if (worst > tol && worst >= bestErr) break;   // cannot win: skip u
 				}
-				pushPoint(gear, gear.penx, gear.peny, col, CAP);
 			}
-			for (var ci = 0; ci < gear.children.length; ci++) {
-				sample(gear.children[ci], gear, st.cx, st.cy, st.penA, phi);
-			}
+			if (worst <= tol) return { turns: u, P: TAU * u, exact: true, err: worst, maxTurns: maxTurns, harmonics: m };
+			if (worst < bestErr) { bestErr = worst; bestU = u; }
 		}
-		for (var s = 0; s <= sampleCount; s++) {
-			var phi = s * dphi;
-			for (var r = 0; r < roots.length; r++) sample(roots[r], null, 0, 0, 0, phi);
+		return { turns: bestU, P: TAU * bestU, exact: false, err: bestErr, maxTurns: maxTurns, harmonics: m };
+	}
+
+	// ---- whole-curve sampling (chunked so it can run in the background) ----
+	function sampleAt(gear, parent, pcx, pcy, carry, phi, invP) {
+		var rot = gear.speed * phi;
+		var st = stateAt(gear, parent, pcx, pcy, carry, rot);
+		gear.rot = rot;
+		gear.cx = st.cx; gear.cy = st.cy; gear.ratio = st.ratio;
+		gear.phase = st.penA;
+		gear.penx = st.cx + gear.pencil.d * Math.cos(st.penA);
+		gear.peny = st.cy + gear.pencil.d * Math.sin(st.penA);
+		var p = gear.pencil;
+		if (p.c1.on || p.c2.on) {
+			var col;
+			if (p.c1.on && p.c2.on) col = mixHue(slotRgb(p.c1), slotRgb(p.c2), wholeColorT(phi * invP, p));
+			else col = p.c1.on ? slotRgb(p.c1) : slotRgb(p.c2);
+			pushPoint(gear, gear.penx, gear.peny, col);
 		}
+		for (var ci = 0; ci < gear.children.length; ci++) {
+			sampleAt(gear.children[ci], gear, st.cx, st.cy, st.penA, phi, invP);
+		}
+	}
+
+	// prepare a resumable bake job over [0, P]. rings are cleared and grown to
+	// the exact size needed once, so stepping never reallocates.
+	function startWhole(roots, period, sampleCount) {
+		var all = flatten(roots);
+		var maxTrail = CAP;
+		for (var i = 0; i < all.length; i++) {
+			clearTrace(all[i]);
+			if (all[i].pencil.c1.on || all[i].pencil.c2.on) maxTrail = Math.min(maxTrail, all[i].trailCap);
+		}
+		// keep room for the inclusive endpoint (phi = P == phi = 0 location) so
+		// the curve's start point is never evicted by the closing sample.
+		sampleCount = Math.max(2, Math.min(sampleCount, maxTrail - 1));
+		for (var j = 0; j < all.length; j++) {
+			if (all[j].pencil.c1.on || all[j].pencil.c2.on) ensureRing(all[j], sampleCount + 1);
+		}
+		return {
+			roots: roots, period: period, total: sampleCount, i: 0,
+			dphi: period.P / sampleCount, invP: 1 / period.P, done: false
+		};
+	}
+
+	// advance a job by up to `budget` samples. returns true when finished.
+	function stepWhole(job, budget) {
+		if (job.done) return true;
+		var end = Math.min(job.total, job.i + budget - 1);
+		for (var s = job.i; s <= end; s++) {
+			var phi = s * job.dphi;
+			for (var r = 0; r < job.roots.length; r++) sampleAt(job.roots[r], null, 0, 0, 0, phi, job.invP);
+		}
+		job.i = end + 1;
+		if (job.i > job.total) job.done = true;
+		return job.done;
+	}
+
+	// blocking convenience wrapper (tests, node harness).
+	function computeWhole(roots, period, sampleCount) {
+		var job = startWhole(roots, period, sampleCount);
+		while (!stepWhole(job, 4096)) { }
+		return job;
 	}
 
 	// re-bake only the color of every ring point (keeps x,y geometry intact).
@@ -274,11 +414,11 @@
 			var g = all[i];
 			if (!(g.pencil.c1.on || g.pencil.c2.on)) continue;
 			var n = g.count;
-			if (n < 1) continue;
+			if (n < 1 || !g.ring) continue;
 			var denom = n - 1;
 			var c1on = g.pencil.c1.on, c2on = g.pencil.c2.on;
 			for (var k = 0; k < n; k++) {
-				var idx = (g.head + k) % Gear.CAP;
+				var idx = (g.head + k) % g.cap;
 				var t = wholeColorT(denom > 0 ? k / denom : 0, g.pencil);
 				var col;
 				if (c1on && c2on) col = mixHue(slotRgb(g.pencil.c1), slotRgb(g.pencil.c2), t);
@@ -307,10 +447,6 @@
 		return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
 	}
 
-	function mixRGB(a, b, t) {
-		return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
-	}
-
 	// preallocated scratch so the hot paths (per-frame pencilColor and per-sample
 	// computeWhole) never allocate.
 	var hslScratchA = { h: 0, l: 0, s: 0 };
@@ -331,18 +467,21 @@
 		o.h = h * 60;
 	}
 
+	// hoisted out of hslToRgb: a nested function literal there allocated a
+	// closure on every colored sample (per-frame + per-bake-sample hot path).
+	function hue2rgb(p, q, t) {
+		if (t < 0) t += 1; else if (t > 1) t -= 1;
+		if (t < 1 / 6) return p + (q - p) * 6 * t;
+		if (t < 1 / 2) return q;
+		if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+		return p;
+	}
+
 	function hslToRgb(h, l, s, o) {
 		if (s === 0) { o[0] = o[1] = o[2] = l; return; }
 		var q = l < 0.5 ? l * (1 + s) : l + s - l * s;
 		var p = 2 * l - q, hk = h / 360;
-		function h2rgb(t) {
-			if (t < 0) t += 1; if (t > 1) t -= 1;
-			if (t < 1 / 6) return p + (q - p) * 6 * t;
-			if (t < 1 / 2) return q;
-			if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
-			return p;
-		}
-		o[0] = h2rgb(hk + 1 / 3); o[1] = h2rgb(hk); o[2] = h2rgb(hk - 1 / 3);
+		o[0] = hue2rgb(p, q, hk + 1 / 3); o[1] = hue2rgb(p, q, hk); o[2] = hue2rgb(p, q, hk - 1 / 3);
 	}
 
 	// blend a and b by t: lightness and saturation interpolate linearly; hue
@@ -419,6 +558,7 @@
 				r: gear.r,
 				speed: gear.speed,
 				internal: gear.internal,
+				phase0: gear.phase0 || 0,
 				rot: gear.rot,
 				trailCap: gear.trailCap,
 				pencil: {
@@ -449,7 +589,7 @@
 			paused: false,
 			symmetry: false,
 			overlay: true,
-			periodThreshold: 2000,
+			maxPeriod: 2000,
 			showCircles: true,
 			showDial: false,
 			showPoints: false,
@@ -483,8 +623,10 @@
 			app.paused = !!obj.app.paused;
 			app.symmetry = !!obj.app.symmetry;
 			app.overlay = obj.app.overlay !== false;
-			var pt = obj.app.periodThreshold;
-			if (typeof pt === 'number' && pt > 0) app.periodThreshold = Math.min(2000, Math.max(50, pt));
+			// legacy files carry `periodThreshold` (the old skip-the-bake
+			// limit); it maps onto the closure-search ceiling.
+			var mp = obj.app.maxPeriod != null ? obj.app.maxPeriod : obj.app.periodThreshold;
+			if (typeof mp === 'number' && mp > 0) app.maxPeriod = Math.min(20000, Math.max(100, Math.round(mp)));
 			app.showCircles = obj.app.showCircles !== false;
 			app.showDial = !!obj.app.showDial;
 			app.showPoints = !!obj.app.showPoints;
@@ -503,16 +645,19 @@
 		clearTrace: clearTrace,
 		clearAllTraces: clearAllTraces,
 		pushPoint: pushPoint,
+		ensureRing: ensureRing,
+		applyTrailCap: applyTrailCap,
 		forEachSegment: forEachSegment,
 		update: update,
 		stateAt: stateAt,
 		rationalize: rationalize,
 		detectPeriod: detectPeriod,
 		computeWhole: computeWhole,
+		startWhole: startWhole,
+		stepWhole: stepWhole,
 		recolorWhole: recolorWhole,
 		flatten: flatten,
 		hexToRgb: hexToRgb,
-		mixRGB: mixRGB,
 		mixHue: mixHue,
 		pencilColor: pencilColor,
 		serialize: serialize,
