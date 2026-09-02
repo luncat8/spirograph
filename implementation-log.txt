@@ -282,6 +282,41 @@
   legacy mapping, panel lvl rows, non-blocking whole mode).
   preview.js renders a bake to PNG offline.
 
+## done (0.6.1) - follow-up review round
+- js/main.js makeChildFromTemplate: `Math.max(0.05, parent.r*0.45)` -> a real
+  proportional size (MIN_GEAR_R = 0.002 floor) and `pencil.d = r * 0.5`. the
+  old absolute floor made every gear from depth 3 down exactly 0.05, i.e. the
+  same radius as its parent: orbit radius (parent.r - r) = 0 and rolling ratio
+  0, so a whole level collapsed onto the parent centre and drew nothing new -
+  the remaining half of the "lvl >= 4 broken" report. new helper fitToParent()
+  rescales an internal gear (and its subtree) that would be >= 90% of its
+  parent, so a template clone landing under a smaller parent stays valid.
+- trail length vs bake resolution untangled:
+  - gear.js ensureRing(gear, need, force) + startWhole passes force, so the
+    bake sizes rings by its own resolution (CAP ceiling) instead of the
+    per-pencil trailCap. that tie made the trail slider act as a subdivision
+    /smoothness control in whole mode.
+  - App.samplesPerTurn (default 200, 20..2000) + App.setSamplesPerTurn drive
+    wholeSampleCount; new sidebar `detail` slider, serialized in the app bag.
+  - setMode('animate') runs Gear.applyTrailCap over the tree so rings grown by
+    a bake shrink back to the animate trail length.
+  - gui.js hides the trail-length row in whole mode.
+- max period: slider range 4..4000 (step 4), App.setMaxPeriod clamps 4..20000,
+  deserialize clamps 4..20000. help text explains it is the search CEILING -
+  the readout reports the smallest closing turn count, which on the whole-mode
+  grid (speeds +-k/d, d <= 12) is typically 30..200; a lower ceiling cuts the
+  figure short on purpose and is reported as ~approx.
+- App.recomputeWhole(force) skips the drag-draft heuristic (used by the refine
+  timer and the test harness).
+- GUI.setPeriod(period, progress, points) also reports the baked point count.
+- test/run.js: 112 assertions (new: deep-level radii/orbit/ratio + 120 deg
+  spacing at depth 4, clone refitted under a smaller parent, whole bake ignores
+  the trail cap, detail changes the point count, rings shrink on mode exit,
+  max period as a ceiling incl. the cut-short approx case, panel rows for max
+  period/detail, trail row hidden in whole mode).
+- 06-review-branch-comparison.md: what main had, what the alternate arena
+  branch had, and which side each merged piece came from.
+
 ## next
 - 05-plan-3D.md (reviewed, amendments at the end of the file).
 - optional: chunked post-gesture overlay rebake if the release hitch ever

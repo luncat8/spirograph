@@ -186,13 +186,20 @@
 		wholeBox = el('div');
 		periodLine = el('div', 'sub', '');
 		wholeBox.appendChild(periodLine);
-		wholeBox.appendChild(sliderRow('max period', 100, 20000, 100, app.maxPeriod, function (v) {
+		wholeBox.appendChild(sliderRow('max period', 4, 4000, 4, app.maxPeriod, function (v) {
 			app.setMaxPeriod(v);
 		}, null, 'maxPeriod'));
 		wholeBox.appendChild(el('div', 'help',
-			'longest period the closure search may use. the figure is always drawn - ' +
-			'a period that does not close within the limit is marked approx and baked ' +
-			'in the background.'));
+			'UPPER LIMIT of the closure search, not a target: the readout shows the ' +
+			'SMALLEST turn count that closes the figure, which for gear ratios on the ' +
+			'whole-mode grid is usually far below the limit. lower it to cut a long ' +
+			'figure short (drawn as ~approx), raise it to let a long one close.'));
+		wholeBox.appendChild(sliderRow('detail', 20, 2000, 20, app.samplesPerTurn, function (v) {
+			app.setSamplesPerTurn(v);
+		}, null, 'samplesPerTurn'));
+		wholeBox.appendChild(el('div', 'help',
+			'points per turn of the baked curve - this is the smoothness knob ' +
+			'(period x detail points, capped at 40000 per pencil).'));
 		panel.appendChild(wholeBox);
 
 		panel.appendChild(checkboxRow('bake full figure (overlay)', app.overlay.on, function (v) {
@@ -371,11 +378,14 @@
 		speedLabRefresh();
 		menu.appendChild(speedRow);
 
-		menu.appendChild(sliderRow('trail length', 500, Gear.CAP, 500, gear.trailCap, function (v) {
-			app.setTrailCap(gear, v); edit(gear, 'trail');
-		}));
-		menu.appendChild(el('div', 'help',
-			'soft cap on stored points per pencil. in whole mode it also bounds the bake resolution.'));
+		if (!whole) {
+			menu.appendChild(sliderRow('trail length', 500, Gear.CAP, 500, gear.trailCap, function (v) {
+				app.setTrailCap(gear, v); edit(gear, 'trail');
+			}));
+			menu.appendChild(el('div', 'help',
+				'how many points of the trail stay on screen (animate mode). whole mode ' +
+				'draws the entire closed curve - its smoothness is the sidebar detail slider.'));
+		}
 
 		var gb = el('div', 'btns');
 		// symmetry ON: add-sub-gear grows the whole level (App.addSubGear routes it).
@@ -430,11 +440,12 @@
 		},
 		// live readout: exact vs approximate closure, plus background bake
 		// progress. never a modal / blocking toast - the figure keeps updating.
-		setPeriod: function (period, progress) {
+		setPeriod: function (period, progress, points) {
 			if (!periodLine || !period) return;
 			var txt = 'period: ' + (period.exact ? '' : '~') + period.turns +
 				' turn' + (period.turns === 1 ? '' : 's');
 			if (!period.exact) txt += ' (approx, gap ' + period.err.toFixed(3) + ')';
+			if (points) txt += ', ' + points + ' pts';
 			if (progress != null && progress < 1) txt += ' - baking ' + Math.round(progress * 100) + '%';
 			periodLine.textContent = txt;
 		},
@@ -456,6 +467,10 @@
 		},
 		setMaxPeriod: function (v) {
 			var r = sliderRefs.maxPeriod; if (!r) return;
+			r.input.value = v; r.val.textContent = fmt(v);
+		},
+		setSamplesPerTurn: function (v) {
+			var r = sliderRefs.samplesPerTurn; if (!r) return;
 			r.input.value = v; r.val.textContent = fmt(v);
 		},
 		// relabel the open menu's anim-speed slider prefix (color mode or trace

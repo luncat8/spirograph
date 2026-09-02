@@ -24,6 +24,7 @@
 		colorMode: 'frequency',
 		symmetry: false,
 		maxPeriod: 2000,
+		samplesPerTurn: 200,
 		showCircles: true,
 		showDial: false,
 		showPoints: false,
@@ -35,8 +36,8 @@
 
 	var TAU = Math.PI * 2;
 	var MAX_GEARS = 400;              // tree-size guard for the level sliders
+	var MIN_GEAR_R = 0.002;           // absolute floor, far below any parent
 	var MAX_LEVEL_N = 12;             // max children per parent from a level slider
-	var SAMPLES_PER_TURN = 200;
 	var WHOLE_POINT_BUDGET = 1500000; // total stored whole-mode points, all pencils
 	var WHOLE_SLICE_MS = 6;           // per-frame time slice for the background bake
 	var WHOLE_CHUNK = 256;            // samples per step call inside that slice
@@ -290,7 +291,7 @@
 			if (p.c1.on || p.c2.on) pencils++;
 		}
 		var perGear = Math.floor(WHOLE_POINT_BUDGET / Math.max(1, pencils));
-		var n = Math.round(period.turns * SAMPLES_PER_TURN);
+		var n = Math.round(period.turns * App.samplesPerTurn);
 		return Math.max(64, Math.min(n, perGear, Gear.CAP - 1));
 	}
 
@@ -306,12 +307,14 @@
 	var lastWholeStart = 0;
 	var refineTimer = 0;
 
-	App.recomputeWhole = function () {
+	// `force` skips the drag-draft heuristic and bakes at full resolution
+	// (used by the refine timer and by the test harness).
+	App.recomputeWhole = function (force) {
 		wholeJob = null;
 		if (refineTimer) { clearTimeout(refineTimer); refineTimer = 0; }
 		if (App.mode !== 'whole') return;
 		var now = Date.now();
-		var draft = (now - lastWholeStart) < DRAFT_MS;
+		var draft = !force && (now - lastWholeStart) < DRAFT_MS;
 		lastWholeStart = now;
 		var period = Gear.detectPeriod(App.roots, App.maxPeriod);
 		App.currentPeriod = period;
@@ -319,13 +322,13 @@
 		if (draft) {
 			n = Math.max(64, Math.round(n / 4));
 			refineTimer = setTimeout(function () {
-				refineTimer = 0; lastWholeStart = 0; App.recomputeWhole();
+				refineTimer = 0; lastWholeStart = 0; App.recomputeWhole(true);
 			}, DRAFT_MS + 20);
 		}
 		wholeJob = Gear.startWhole(App.roots, period, n);
 		if (App.overlay.on) App.invalidateOverlay();   // clear once; the bake appends
 		App.requestRender();
-		GUI.setPeriod(period, 0);
+		GUI.setPeriod(period, 0, wholeJob.total + 1);
 	};
 
 	function nowMs() {
@@ -337,7 +340,7 @@
 		var t0 = nowMs();
 		do { Gear.stepWhole(wholeJob, WHOLE_CHUNK); }
 		while (!wholeJob.done && nowMs() - t0 < WHOLE_SLICE_MS);
-		GUI.setPeriod(App.currentPeriod, wholeJob.i / (wholeJob.total + 1));
+		GUI.setPeriod(App.currentPeriod, wholeJob.i / (wholeJob.total + 1), wholeJob.total + 1);
 		App.needsRender = true;
 		if (wholeJob.done) {
 			wholeJob = null;
@@ -348,7 +351,14 @@
 	// the closure search ceiling: how many turns detectPeriod may spend before
 	// it settles for the best approximate closure it found.
 	App.setMaxPeriod = function (v) {
-		App.maxPeriod = Math.max(100, Math.min(20000, Math.round(v)));
+		App.maxPeriod = Math.max(4, Math.min(20000, Math.round(v)));
+		if (App.mode === 'whole') App.recomputeWhole();
+	};
+
+	// whole-mode bake resolution (points per turn of the root). this - not the
+	// per-pencil trail length - is what makes a baked curve smooth or faceted.
+	App.setSamplesPerTurn = function (v) {
+		App.samplesPerTurn = Math.max(20, Math.min(2000, Math.round(v)));
 		if (App.mode === 'whole') App.recomputeWhole();
 	};
 
@@ -423,6 +433,8 @@
 		} else {
 			wholeJob = null;
 			App.clearTraces();                         // fresh tracing
+			// the bake may have grown rings past the animate trail cap
+			for (var i = 0; i < App.allGears.length; i++) Gear.applyTrailCap(App.allGears[i]);
 		}
 		GUI.setMode(m);
 		GUI.setColorMode(App.colorMode);
@@ -475,12 +487,19 @@
 	// one recipe for every new sub-gear: clone of the level template (so a
 	// grown level stays symmetric, sub-trees included) or the plain defaults.
 	function makeChildFromTemplate(parent, template, phase0) {
+		// a new gear is always a fraction of ITS parent. the old
+		// Math.max(0.05, parent.r * 0.45) floor made every gear below depth 3
+		// exactly 0.05: same size as its parent => orbit radius
+		// (parent.r - r) = 0, rolling ratio 0, and all siblings collapsed onto
+		// the parent centre. that was the "lvl >= 4 does nothing" bug.
+		var cr = Math.max(MIN_GEAR_R, parent.r * 0.45);
 		var child = template ? cloneGear(template) : Gear.makeGear({
-			r: Math.max(0.05, parent.r * 0.45),
+			r: cr,
 			speed: 0.3,
 			internal: true,
-			pencil: { d: parent.r * 0.2, width: 2, c1: { on: true, color: '#ffffff' }, c2: { on: false, color: '#ff8a3d' } }
+			pencil: { d: cr * 0.5, width: 2, c1: { on: true, color: '#ffffff' }, c2: { on: false, color: '#ff8a3d' } }
 		});
+		fitToParent(child, parent);
 		child.phase0 = phase0;
 		parent.children.push(child);
 		Gear.initRuntime(child, parent);
@@ -565,6 +584,19 @@
 			c.pencil.d *= f;
 			scaleSubtree(c, f);
 		}
+	}
+
+	// a gear mounted inside its parent must stay smaller than it, otherwise the
+	// orbit radius (parent.r - r) goes to zero or negative and the gear degenerates
+	// (sits on the parent centre / flips 180 deg). used when a clone lands under
+	// a smaller parent.
+	function fitToParent(gear, parent) {
+		if (!parent || !gear.internal) return;
+		if (gear.r < parent.r * 0.9) return;
+		var f = (parent.r * 0.45) / gear.r;
+		gear.r *= f;
+		gear.pencil.d *= f;
+		scaleSubtree(gear, f);
 	}
 
 	App.setGearRadius = function (gear, r) {
@@ -685,6 +717,7 @@
 			symmetry: App.symmetry,
 			overlay: App.overlay.on,
 			maxPeriod: App.maxPeriod,
+			samplesPerTurn: App.samplesPerTurn,
 			showCircles: App.showCircles,
 			showDial: App.showDial,
 			showPoints: App.showPoints,
@@ -767,6 +800,10 @@
 		if (typeof s.maxPeriod === 'number' && App.maxPeriod !== s.maxPeriod) {
 			App.maxPeriod = s.maxPeriod;
 			GUI.setMaxPeriod && GUI.setMaxPeriod(App.maxPeriod);
+		}
+		if (typeof s.samplesPerTurn === 'number' && App.samplesPerTurn !== s.samplesPerTurn) {
+			App.samplesPerTurn = s.samplesPerTurn;
+			GUI.setSamplesPerTurn && GUI.setSamplesPerTurn(App.samplesPerTurn);
 		}
 		if (typeof s.showCircles === 'boolean' && App.showCircles !== s.showCircles) {
 			App.showCircles = s.showCircles; GUI.setShowCircles && GUI.setShowCircles(App.showCircles); markDirty();

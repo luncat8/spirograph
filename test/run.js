@@ -398,5 +398,136 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	App.resetScene();
 })();
 
+// ---- deep levels really shrink (the lvl >= 4 bug) --------------------
+(function deepLevelSizes() {
+	App.resetScene();
+	for (var l = 1; l <= 5; l++) App.applyLevel(l, 3);
+	var okShrink = true, okOrbit = true, okRatio = true;
+	for (var i = 0; i < App.allGears.length; i++) {
+		var g = App.allGears[i];
+		if (!g.parent) continue;
+		if (!(g.r < g.parent.r * 0.9)) okShrink = false;
+		var orbitR = g.internal ? (g.parent.r - g.r) : (g.parent.r + g.r);
+		if (!(orbitR > 1e-4)) okOrbit = false;
+		var ratio = g.internal ? (g.parent.r - g.r) / g.r : (g.parent.r + g.r) / g.r;
+		if (!(Math.abs(ratio) > 0.05)) okRatio = false;
+	}
+	ok(okShrink, 'every new gear is a fraction of its own parent (no 0.05 floor)');
+	ok(okOrbit, 'no gear degenerates onto its parent centre (orbit radius > 0)');
+	ok(okRatio, 'every gear still rolls (rolling ratio != 0)');
+	// evenly spaced at depth 4, in the animate integrator
+	w.tick(3);
+	var p = App.gearsAtDepth(3)[0], kids = p.children;
+	var angs = [], dists = [];
+	for (var k = 0; k < kids.length; k++) {
+		angs.push(Math.atan2(kids[k].cy - p.cy, kids[k].cx - p.cx));
+		dists.push(Math.hypot(kids[k].cx - p.cx, kids[k].cy - p.cy));
+	}
+	var d01 = Math.abs(((angs[1] - angs[0]) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI));
+	var d12 = Math.abs(((angs[2] - angs[1]) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI));
+	near(d01, 2 * Math.PI / 3, 1e-9, 'depth-4 siblings are 120 deg apart (animate)');
+	near(d12, 2 * Math.PI / 3, 1e-9, 'depth-4 siblings keep the spacing all round');
+	near(dists[0], dists[2], 1e-12, 'depth-4 siblings share one orbit radius');
+	// a clone that lands under a smaller parent is scaled to fit
+	App.resetScene();
+	App.applyLevel(1, 2);
+	var big = App.roots[0].children[0];
+	App.setGearRadius(big, 0.08);
+	App.applyLevel(2, 2);
+	var fits = true;
+	for (var m = 0; m < big.children.length; m++) if (big.children[m].r >= big.r) fits = false;
+	ok(fits, 'a sub-gear never ends up as large as its parent');
+	App.resetScene();
+})();
+
+// ---- trail length is a LENGTH, detail is the smoothness --------------
+(function trailVsDetail() {
+	App.resetScene();
+	App.setMode('whole');
+	function bake() {
+		App.recomputeWhole(true);              // skip the drag-draft heuristic
+		var guard = 0;
+		while (guard++ < 8000 && wholeBusy()) w.tick(1);
+		w.tick(50);
+	}
+	function wholeBusy() { return App.allGears[1].count === 0; }
+	App.setSamplesPerTurn(200);
+	bake();
+	var turns = App.currentPeriod.turns;
+	var hi = App.allGears[1].count;
+	ok(hi > turns * 100, 'detail 200 bakes ~200 points per turn', hi + ' for ' + turns + ' turns');
+	// the per-pencil trail cap must NOT change the baked curve
+	App.setTrailCap(App.allGears[1], 1000);
+	App.onGearParam(App.allGears[1], 'trail');
+	bake();
+	ok(App.allGears[1].count > 1000, 'whole bake ignores the animate trail cap', App.allGears[1].count);
+	// detail does
+	App.setSamplesPerTurn(40);
+	bake();
+	var lo = App.allGears[1].count;
+	ok(lo < hi / 3, 'lowering detail makes the bake coarser', lo + ' vs ' + hi);
+	// and leaving whole mode gives the memory back to the trail cap
+	App.setMode('animate');
+	ok(App.allGears[1].cap <= 1000, 'rings shrink back to the trail cap on exit', App.allGears[1].cap);
+	App.setTrailCap(App.allGears[1], 20000);
+	App.resetScene();
+})();
+
+// ---- max period is a ceiling, not a target ---------------------------
+(function maxPeriodCeiling() {
+	App.resetScene();
+	App.setMode('whole');
+	w.tick(20);
+	var full = App.currentPeriod;
+	ok(full.exact, 'the snapped default scene closes exactly', full.turns);
+	ok(full.turns <= App.maxPeriod, 'the reported period is the SMALLEST closing one, well under the ceiling',
+		full.turns + ' <= ' + App.maxPeriod);
+	App.setMaxPeriod(8);
+	w.tick(20);
+	ok(App.currentPeriod.turns <= 8, 'a low ceiling cuts the figure short', App.currentPeriod.turns);
+	ok(!App.currentPeriod.exact, 'a cut-short figure is reported as approximate');
+	App.setMaxPeriod(2000);
+	w.tick(20);
+	ok(App.currentPeriod.turns === full.turns, 'raising the ceiling restores the exact period');
+	App.setMode('animate');
+	App.resetScene();
+})();
+
+// ---- panel: max period + detail sliders ------------------------------
+(function wholePanelRows() {
+	function findRow(label) {
+		var found = null;
+		(function walk(n) {
+			if (found) return;
+			if (n.input && n.labelEl && n.labelEl.textContent.indexOf(label) === 0) { found = n; return; }
+			for (var i = 0; i < (n.children || []).length; i++) walk(n.children[i]);
+		})(w.byId.panel);
+		return found;
+	}
+	var mp = findRow('max period');
+	ok(!!mp, 'panel has a max period slider');
+	ok(String(mp.input.min) === '4' && String(mp.input.max) === '4000', 'max period range is 4..4000',
+		mp.input.min + '..' + mp.input.max);
+	var det = findRow('detail');
+	ok(!!det, 'panel has a detail (samples/turn) slider');
+	det.input.value = 400;
+	det.input.dispatch('input');
+	ok(App.samplesPerTurn === 400, 'detail slider drives the bake resolution', App.samplesPerTurn);
+	App.setSamplesPerTurn(200);
+	// context menu: trail length is animate-only
+	App.setMode('animate');
+	w.GUI.openMenu(App.allGears[1], 50, 50);
+	var rows = w.byId.ctxmenu.children, hasTrail = false;
+	for (var i = 0; i < rows.length; i++) if (rows[i].labelEl && rows[i].labelEl.textContent.indexOf('trail length') === 0) hasTrail = true;
+	ok(hasTrail, 'animate mode: menu has the trail length slider');
+	App.setMode('whole');
+	rows = w.byId.ctxmenu.children; hasTrail = false;
+	for (var j = 0; j < rows.length; j++) if (rows[j].labelEl && rows[j].labelEl.textContent.indexOf('trail length') === 0) hasTrail = true;
+	ok(!hasTrail, 'whole mode: no trail length slider (it has no meaning there)');
+	App.setMode('animate');
+	w.GUI.closeMenu();
+	App.resetScene();
+})();
+
 console.log((fail ? 'FAILED' : 'OK') + ': ' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);

@@ -18,7 +18,8 @@ draw hypotrochoid / epitrochoid curves in the browser. no build step.
 	  two color slots (each with its own enable checkbox) -> 0 colors = no pencil,
 	  1 color = static, 2 colors = animated blend between them
 	  global cycles/frequency color mode (auto per trace mode, user-overridable)
-	per-pencil trail length (soft cap on stored points; rings grow lazily)
+	per-pencil trail length (how much of the animate trail stays on screen;
+	  rings grow lazily) + a separate whole-mode `detail` (points per turn)
 	whole-curve mode with tolerance-based period detection, background
 	  (time-sliced) baking with a progress readout, and sliders that only stop
 	  on period-friendly values; `max period` sets the search ceiling
@@ -88,8 +89,9 @@ from this menu user can:
 	sliders: gear diameter and rotation speed -1...1
 	move slider of marker pencil position (distance from center of this gear)
 	slider of pencil line width
-	slider of trail length (max stored trail points; in whole mode it also
-	bounds the bake resolution)
+	slider of trail length (how many points of the animate trail stay on
+	screen; hidden in whole mode, where the curve is the whole closed figure
+	and its smoothness is the sidebar `detail` slider)
 	two color slots, each with its own enable checkbox placed before the picker:
 		if none enabled  -> no pencil is drawn
 		if one enabled    -> static single color
@@ -113,9 +115,13 @@ and a `whole mode` section (visible in whole mode):
 	period readout - `period: 132 turns` (or `~132 turns (approx, gap ...)`
 	when nothing closes exactly), plus `- baking NN%` while the background
 	bake runs
-	max period slider - the ceiling of the closure search. the figure is
-	always drawn; a period that does not close within the limit is marked
-	approx instead of being skipped
+	max period slider (4..4000) - the CEILING of the closure search, not a
+	target. the readout shows the smallest turn count that closes the figure,
+	which on the whole-mode gear grid is usually 30..200; lower the ceiling to
+	cut a long figure short (drawn, marked ~approx), raise it to let a long
+	one close.
+	detail slider (20..2000 points per turn) - smoothness of the baked curve
+	(period x detail points, capped at 40000 per pencil)
 
 drag context menu using pointer. move by drag caption 'gear' label with unicode ico ✥ near it
 
@@ -251,6 +257,7 @@ onto it).
 	CHANGELOG.md - short release notes
 	03-performance-refactoring-plan.md - pan/zoom perf plan (implemented)
 	04-plan-level-sliders-symmetry.md - level sliders + symmetry plan (implemented)
+	06-review-branch-comparison.md - review of the two 04-plan implementations
 	05-plan-3D.md - 3D mode plan (next)
 	js/main.js - init, loop
 	js/gear.js - gear math

@@ -58,3 +58,22 @@
 - never rebuild the slider row the pointer is currently dragging (detaching an
   active range input releases pointer capture); skip rows where
   document.activeElement === row.input when syncing values.
+
+## gear sizing
+- never use an ABSOLUTE floor for a generated child radius
+  (`Math.max(0.05, parent.r * 0.45)`). below depth 3 every gear clamps to the
+  floor and becomes as large as its parent: orbit radius (parent.r - r) = 0,
+  rolling ratio 0, the whole level collapses onto the parent centre and looks
+  like "deep levels do nothing". scale relative to the parent, keep the floor
+  orders of magnitude smaller, and refit a cloned subtree that lands under a
+  smaller parent.
+
+## controls that mean one thing
+- a per-pencil ring cap ("trail length") must not double as the whole-mode
+  bake resolution: users read it as a length, and tying it to the sampler
+  turns it into a smoothness/subdivision control. keep a separate
+  points-per-turn ("detail") knob and let the bake size its rings itself
+  (shrink them back when leaving the mode).
+- a search CEILING is not a target. "max period 2000" does not make a 2000
+  turn figure: the scan reports the smallest closing turn count. say so in the
+  help text, and keep the range near the useful band (4..4000).

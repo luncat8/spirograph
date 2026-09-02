@@ -123,14 +123,17 @@
 		gear.drawnNewestRing = undefined;              // ring indices moved
 	}
 
-	// grow the ring so it can hold at least `need` points (never above the
-	// gear's trailCap). rings start unallocated and double on demand.
-	function ensureRing(gear, need) {
-		var want = Math.min(need, gear.trailCap);
+	// grow the ring so it can hold at least `need` points. rings start
+	// unallocated and double on demand. `force` lifts the trailCap ceiling:
+	// the whole-mode bake sizes rings by its own resolution (the trail cap is
+	// an animate-mode trail *length*, not a curve quality knob).
+	function ensureRing(gear, need, force) {
+		var want = force ? Math.min(need, CAP) : Math.min(need, gear.trailCap);
 		if (gear.cap >= want) return;
 		var cap = gear.cap || MIN_RING;
 		while (cap < want) cap *= 2;
-		if (cap > gear.trailCap) cap = gear.trailCap;
+		if (cap > want && !force) cap = want;
+		if (cap > CAP) cap = CAP;
 		reallocRing(gear, cap);
 	}
 
@@ -368,16 +371,12 @@
 	// the exact size needed once, so stepping never reallocates.
 	function startWhole(roots, period, sampleCount) {
 		var all = flatten(roots);
-		var maxTrail = CAP;
-		for (var i = 0; i < all.length; i++) {
-			clearTrace(all[i]);
-			if (all[i].pencil.c1.on || all[i].pencil.c2.on) maxTrail = Math.min(maxTrail, all[i].trailCap);
-		}
+		for (var i = 0; i < all.length; i++) clearTrace(all[i]);
 		// keep room for the inclusive endpoint (phi = P == phi = 0 location) so
 		// the curve's start point is never evicted by the closing sample.
-		sampleCount = Math.max(2, Math.min(sampleCount, maxTrail - 1));
+		sampleCount = Math.max(2, Math.min(sampleCount, CAP - 1));
 		for (var j = 0; j < all.length; j++) {
-			if (all[j].pencil.c1.on || all[j].pencil.c2.on) ensureRing(all[j], sampleCount + 1);
+			if (all[j].pencil.c1.on || all[j].pencil.c2.on) ensureRing(all[j], sampleCount + 1, true);
 		}
 		return {
 			roots: roots, period: period, total: sampleCount, i: 0,
@@ -590,6 +589,7 @@
 			symmetry: false,
 			overlay: true,
 			maxPeriod: 2000,
+			samplesPerTurn: 200,
 			showCircles: true,
 			showDial: false,
 			showPoints: false,
@@ -626,7 +626,9 @@
 			// legacy files carry `periodThreshold` (the old skip-the-bake
 			// limit); it maps onto the closure-search ceiling.
 			var mp = obj.app.maxPeriod != null ? obj.app.maxPeriod : obj.app.periodThreshold;
-			if (typeof mp === 'number' && mp > 0) app.maxPeriod = Math.min(20000, Math.max(100, Math.round(mp)));
+			if (typeof mp === 'number' && mp > 0) app.maxPeriod = Math.min(20000, Math.max(4, Math.round(mp)));
+			var sp = obj.app.samplesPerTurn;
+			if (typeof sp === 'number' && sp > 0) app.samplesPerTurn = Math.min(2000, Math.max(20, Math.round(sp)));
 			app.showCircles = obj.app.showCircles !== false;
 			app.showDial = !!obj.app.showDial;
 			app.showPoints = !!obj.app.showPoints;

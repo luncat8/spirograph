@@ -1,0 +1,50 @@
+# review: the two 04-plan implementations
+
+two branches implemented `04-plan-level-sliders-symmetry.md` independently:
+
+- **main** (`59ad0c7`, versions 0.5.0 / 0.5.1) - continued on the current code.
+- **alt** (`arena/01a060b9-spirograph`, `565f134`) - branched from the older
+  pre-0.5 code and re-implemented the plan from there.
+
+they share no git history (unrelated roots), so this is a feature-by-feature
+comparison and a record of which side each merged piece came from.
+
+## scoreboard
+
+| area | main (0.5.x) | alt branch | merged (0.6.x) |
+|---|---|---|---|
+| sibling placement | offset written into `gear.rot`, re-spaced on every level change | `phase0` model field folded into the frame (`carry`) | **alt** - `rot` is integrated per frame (drifts), is overwritten by the whole-mode sampler (`rot = speed*phi`), and offsetting it only reparametrizes ONE shared curve. main even documented the drift ("1.52 rad after 3.7 s") and worked around it by re-spacing, which cannot fix whole mode at all |
+| new gear size | `Math.max(0.05, parent.r*0.45)` | same bug | **neither** - both clamp to an absolute floor, so every gear below depth 3 is as big as its parent (orbit radius 0). fixed here: proportional size + `fitToParent` |
+| level template | shallow field copy (no children) | `cloneGear` deep clone | **alt** - a shallow clone grows lvl 1 into childless siblings and breaks every deeper level |
+| lvl slider range | 1..12 | 0..12 (0 removes the level) | **alt** |
+| lvl slider value | first non-empty parent's child count | max over the level's parents | **alt** (an asymmetric hand-built tree still shows the level) |
+| mid-drag slider rebuild | rows updated in place | in place **and** skips the focused row | **alt** (superset) |
+| tree-size guard | none (12x12x12 = 1885 gears) | 400-gear guard + toast | **alt** |
+| period detection | exact LCM of rationalized speeds, capped at 2000 turns | amplitude-weighted closure scan, always answers | **alt** - the LCM is discontinuous in the parameters (0.2 -> 0.2001 explodes the period) and forces a "cannot draw" state. both branches had fixed the same "only roots[0] was walked" bug |
+| long period | toast "bake skipped", figure not updated | background job, progressive paint | **alt** |
+| bake scheduling | one blocking `computeWhole` | resumable job, ~6 ms slices, draft + refine while dragging | **alt** |
+| whole-mode sliders | continuous + post-snap in the input handler | index sliders over the valid set | **alt** - a post-snap fights the drag; an index slider makes every reachable position valid |
+| bake resolution vs trail cap | bake ignored `trailCap` (passed `CAP`) | bake bounded by `trailCap` | **main** - alt's tie turned "trail length" into a smoothness knob. merged: bake sizes its own rings, plus a separate `detail` (points/turn) slider |
+| ring memory | `CAP*5` floats per gear at load (~800 KB each) | lazy alloc, doubling, shrink on cap lowering | **alt** |
+| resizing a gear | radius only (children can outgrow the parent) | scales the subtree (ratios/period preserved) | **alt** |
+| symmetry mirroring | replaces the whole `c1`/`c2` slot objects | writes fields in place, skips `phase0` | **alt** (no slot churn), plus main's "clear the subtree in animate mode" |
+| symmetry + add sub-gear | routed in `gui.js` | routed in `App.addSubGear` | **alt** (one place, keyboard/API paths get it too) |
+| save/load app state | full `app` bag (mode, pause, symmetry, overlay, toggles, threshold) + GUI setter sync + full reset | none (older base) | **main** - kept and extended with `maxPeriod` / `samplesPerTurn`, legacy `periodThreshold` mapped |
+| reset button | restores scene AND every setting | scene only | **main** |
+| right mouse button | native browser menu (save image) | `preventDefault` | **main** |
+| `colorMode` on load | explicit field > pencil consensus > mode default, re-applied after the app bag | pencil consensus only | **main** |
+| `hslToRgb` | closure allocated per colored sample | hoisted `hue2rgb` | **alt** |
+| dead code | `gcd`/`lcm`/`mixRGB` kept | removed | **alt** |
+| sidebar overflow | clipped when tall | scrolls (`max-height`/`overflow-y`) | **alt** |
+| tests | node harness described in the log, not committed | `test/run.js` (71 checks) + `test/preview.js` | **alt** - merged and extended to 112 checks |
+
+## summary
+
+- **alt was right about the model and the whole-mode UX**: `phase0`, deep
+  clones, 0-based level sliders, the closure scan, the background bake, index
+  sliders, lazy rings, and a committed test harness.
+- **main was right about everything around persistence and polish**: the `app`
+  state bag with a real reset, colorMode restore, native right-click, and
+  keeping the bake independent of the per-pencil trail cap.
+- **both were wrong** about the generated gear size (absolute 0.05 floor), which
+  is what actually made levels >= 4 look broken even after the `phase0` fix.

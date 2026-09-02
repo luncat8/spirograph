@@ -1,5 +1,29 @@
 # CHANGELOG
 
+## 0.6.1 - follow-up review (deep levels, trail length, max period)
+- **lvl >= 4 really fixed.** the size fix was still missing: a new sub-gear used
+  `Math.max(0.05, parent.r * 0.45)`, so from depth 3 down every gear clamped to
+  the 0.05 floor and ended up *the same size as its parent* - orbit radius
+  `parent.r - r` = 0, rolling ratio 0, all siblings stacked on the parent
+  centre. new gears are now strictly proportional (`parent.r * 0.45`, floor
+  0.002, pencil offset from the child's own radius), and `fitToParent` rescales
+  a cloned sub-tree that lands under a smaller parent. depth 5 now reads
+  r = 0.009 with a positive orbit radius at every level, and depth-4 siblings
+  sit exactly 360/N apart in the animate integrator.
+- **trail length is a length again.** it no longer bounds the whole-mode bake
+  (that made it a smoothness/subdivision knob): the bake sizes its rings by its
+  own resolution up to the 40000-point ceiling, and the slider is hidden in
+  whole mode. leaving whole mode shrinks the rings back to the trail cap.
+- **new `detail` slider** (whole-mode box, 20..2000 points per turn, default
+  200): the actual smoothness knob for a baked curve. saved with the scene.
+- **`max period` range is now 4..4000** (was 100..20000). the help text spells
+  out that it is the *upper limit* of the closure search, not a target: the
+  readout shows the SMALLEST turn count that closes the figure, which on the
+  whole-mode gear-ratio grid is usually 30..200. lowering it below the true
+  period deliberately cuts the figure short (drawn, marked `~approx`).
+- the period readout also shows the baked point count (`period: 36 turns,
+  7201 pts`).
+
 ## 0.6.0 - level/period fixes (review pass over the 04-plan implementation)
 - **lvl sliders start at 0.** 0 empties that level and everything below it,
   which is how a level is removed; the range is 0..12 and a new slider appears
