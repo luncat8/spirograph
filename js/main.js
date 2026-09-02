@@ -631,7 +631,9 @@
 		if (pointers.size === 1) {
 			var g = hitGear(xb, yb);
 			if (e.pointerType === 'mouse') {
-				// middle button is reserved for pan; never opens the menu.
+				// right btn - native context menu
+				if (e.button === 2) return;
+				// middle button - pan;.
 				if (e.button === 1) {
 					pendingGear = null;
 					panning = true; lastPx = e.clientX; lastPy = e.clientY; App.requestRender();
@@ -1134,8 +1136,10 @@
 		window.addEventListener('pointerup', onUp);
 		App.canvas.addEventListener('pointercancel', onCancel);
 		App.canvas.addEventListener('wheel', onWheel, { passive: false });
-		App.canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
-		App.canvas.addEventListener('auxclick', function (e) { if (e.button !== 0) e.preventDefault(); });
+		// right mouse button: let the browser show its native context menu so the
+		// user can "save image as" etc. do not preventDefault on contextmenu, and
+		// do not block the auxclick that follows a right-button release.
+		App.canvas.addEventListener('auxclick', function (e) { if (e.button === 1) e.preventDefault(); });
 		window.addEventListener('keydown', onKey);
 		window.addEventListener('beforeunload', saveLocal);
 

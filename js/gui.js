@@ -204,7 +204,7 @@
 		panel.appendChild(autosaveLabel);
 
 		var help = el('div', 'help',
-			'space pause - wheel zoom - drag pan - click gear to edit - Esc close');
+			'space pause - wheel zoom - drag pan - click gear to edit - rmb browser menu - Esc close');
 		panel.appendChild(help);
 
 		GUI.setMode(app.mode);

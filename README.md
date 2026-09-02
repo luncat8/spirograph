@@ -77,7 +77,9 @@ in this app R,r come from each gear radius vs its ancestor chain; internal/exter
 
 ### use case
 
-click or mouse over axis of gear - show context menu.
+mouse L and mouse center btn - pan. right mouse btn keep native browser behavior to be possible save image, etc.
+mouse left btn on gear - show context menu.
+
 from this menu user can:
 
 	switch is this gear internal or external relative to parent
