@@ -215,7 +215,7 @@
      invalidation — the first toggle from default would never rebake. Now it
      calls invalidateOverlay + markDirty when the flag actually flips.
 
-## done (0.6.0) - review pass over the 04-plan implementation (level sliders,
+## done (0.5.5) - review pass over the 04-plan implementation (level sliders,
 ## period detection); cross-checked against the alternate arena branch
 - js/gear.js:
   - `phase0` model field (makeGear/serializeGear/initRuntime) folded into the
@@ -282,7 +282,7 @@
   legacy mapping, panel lvl rows, non-blocking whole mode).
   preview.js renders a bake to PNG offline.
 
-## done (0.6.1) - follow-up review round
+## done (0.5.6) - follow-up review round
 - js/main.js makeChildFromTemplate: `Math.max(0.05, parent.r*0.45)` -> a real
   proportional size (MIN_GEAR_R = 0.002 floor) and `pencil.d = r * 0.5`. the
   old absolute floor made every gear from depth 3 down exactly 0.05, i.e. the
@@ -318,6 +318,6 @@
   branch had, and which side each merged piece came from.
 
 ## next
-- 05-plan-3D.md (reviewed, amendments at the end of the file).
+- 0.6-plan-3D.md (reviewed, amendments at the end of the file).
 - optional: chunked post-gesture overlay rebake if the release hitch ever
   measures perceptible; world-space FBO for >zoom-1 quality bounds.

@@ -351,7 +351,7 @@
 	// the closure search ceiling: how many turns detectPeriod may spend before
 	// it settles for the best approximate closure it found.
 	App.setMaxPeriod = function (v) {
-		App.maxPeriod = Math.max(4, Math.min(20000, Math.round(v)));
+		App.maxPeriod = Math.max(4, Math.min(4000, Math.round(v)));
 		if (App.mode === 'whole') App.recomputeWhole();
 	};
 

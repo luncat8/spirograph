@@ -626,7 +626,7 @@
 			// legacy files carry `periodThreshold` (the old skip-the-bake
 			// limit); it maps onto the closure-search ceiling.
 			var mp = obj.app.maxPeriod != null ? obj.app.maxPeriod : obj.app.periodThreshold;
-			if (typeof mp === 'number' && mp > 0) app.maxPeriod = Math.min(20000, Math.max(4, Math.round(mp)));
+			if (typeof mp === 'number' && mp > 0) app.maxPeriod = Math.min(4000, Math.max(4, Math.round(mp)));
 			var sp = obj.app.samplesPerTurn;
 			if (typeof sp === 'number' && sp > 0) app.samplesPerTurn = Math.min(2000, Math.max(20, Math.round(sp)));
 			app.showCircles = obj.app.showCircles !== false;

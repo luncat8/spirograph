@@ -1,6 +1,6 @@
 # CHANGELOG
 
-## 0.6.1 - follow-up review (deep levels, trail length, max period)
+## 0.5.6 - follow-up review (deep levels, trail length, max period)
 - **lvl >= 4 really fixed.** the size fix was still missing: a new sub-gear used
   `Math.max(0.05, parent.r * 0.45)`, so from depth 3 down every gear clamped to
   the 0.05 floor and ended up *the same size as its parent* - orbit radius
@@ -24,7 +24,7 @@
 - the period readout also shows the baked point count (`period: 36 turns,
   7201 pts`).
 
-## 0.6.0 - level/period fixes (review pass over the 04-plan implementation)
+## 0.5.5 - level/period fixes (review pass over the 04-plan implementation)
 - **lvl sliders start at 0.** 0 empties that level and everything below it,
   which is how a level is removed; the range is 0..12 and a new slider appears
   as soon as the level above holds gears, at any depth. a 400-gear guard blocks

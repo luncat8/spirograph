@@ -334,19 +334,19 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	ok(d.maxPeriod === 2000, 'default app state carries the closure ceiling', d.maxPeriod);
 	var roots = scene();
 	var obj = Gear.serialize(roots, { zoom: 1, pan: [0, 0] }, 1, 'cycles', {
-		mode: 'whole', paused: true, symmetry: true, overlay: false, maxPeriod: 5000,
+		mode: 'whole', paused: true, symmetry: true, overlay: false, maxPeriod: 3000,
 		showCircles: false, showDial: true, showPoints: true, glowPoints: true, drawTrails: false
 	});
 	var back = Gear.deserialize(JSON.parse(JSON.stringify(obj)));
 	ok(back.app.mode === 'whole' && back.app.paused && back.app.symmetry, 'app flags survive a save/load');
-	ok(back.app.maxPeriod === 5000, 'maxPeriod survives a save/load', back.app.maxPeriod);
+	ok(back.app.maxPeriod === 3000, 'maxPeriod survives a save/load', back.app.maxPeriod);
 	ok(back.app.overlay === false && back.app.drawTrails === false, 'off-flags survive a save/load');
 	// legacy scenes carry the old skip-the-bake threshold
 	var legacy = Gear.deserialize({ gears: [], app: { periodThreshold: 300 } });
 	ok(legacy.app.maxPeriod === 300, 'legacy periodThreshold maps onto maxPeriod', legacy.app.maxPeriod);
 	var bogus = Gear.deserialize({ gears: [], app: { mode: 'nope', maxPeriod: 999999 } });
 	ok(bogus.app.mode === 'animate', 'invalid mode falls back to the default');
-	ok(bogus.app.maxPeriod === 20000, 'maxPeriod is clamped', bogus.app.maxPeriod);
+	ok(bogus.app.maxPeriod === 4000, 'maxPeriod is clamped', bogus.app.maxPeriod);
 	// no app block at all (pre-0.5.1 file)
 	ok(Gear.deserialize({ gears: [] }).app.mode === 'animate', 'legacy file with no app block gets defaults');
 })();
@@ -392,7 +392,7 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	ok(w.byId.toast.textContent.indexOf('threshold') < 0, 'no blocking threshold popup');
 	// raising the ceiling re-runs the search without blocking
 	t0 = Date.now();
-	App.setMaxPeriod(20000);
+	App.setMaxPeriod(4000);
 	ok(Date.now() - t0 < 60, 'raising the search ceiling is non-blocking', (Date.now() - t0) + 'ms');
 	App.setMode('animate');
 	App.resetScene();
