@@ -257,6 +257,7 @@
 		panel.appendChild(el('div', 'sub', 'spheres'));
 		panel.appendChild(checkboxRow('glass spheres', app.spheres, function (v) { app.setSpheres(v); }, 'spheres'));
 		panel.appendChild(colorRow('sphere tint', app.sphereColor, function (v) { app.setSphereColor(v); }, 'sphereColor'));
+		panel.appendChild(sliderRow('wall thickness', 0.02, 0.5, 0.01, app.sphereWall, function (v) { app.setSphereWall(v); }, null, 'sphereWall'));
 		panel.appendChild(sliderRow('translucency', 0, 1, 0.01, app.sphereTrans, function (v) { app.setSphereTrans(v); }, null, 'sphereTrans'));
 		panel.appendChild(el('div', 'help',
 			'Ray-shaded glass shells on every gear. tint colors the glass; ' +
@@ -548,6 +549,10 @@
 		setSphereColor: function (v) { if (colorRefs.sphereColor) colorRefs.sphereColor.value = v; },
 		setSphereTrans: function (v) {
 			var r = sliderRefs.sphereTrans; if (!r) return;
+			r.input.value = v; r.val.textContent = fmt(v);
+		},
+		setSphereWall: function (v) {
+			var r = sliderRefs.sphereWall; if (!r) return;
 			r.input.value = v; r.val.textContent = fmt(v);
 		},
 		setGlobalSpeed: function (v) {

@@ -2,8 +2,10 @@
 
 ## 0.7.2 - glass spheres view option
 - new "spheres" section in the sidebar view options: **glass spheres** checkbox,
-  **sphere tint** color picker, **translucency** slider. persisted in the app
-  bag like every other toggle (save/load/reset covered).
+  **sphere tint** color picker, **wall thickness** slider (controls the
+  relative shell thickness the Beer-Lambert path sees - thicker = more
+  visible absorption and a stronger TIR rim), **translucency** slider.
+  persisted in the app bag like every other toggle (save/load/reset covered).
 - every gear disc renders as a ray-shaded glass shell (one instanced impostor
   quad per gear - analytic, no geometry, no raymarching): Fresnel reflections
   off a small studio environment, Beer-Lambert absorption through the shell

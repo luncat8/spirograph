@@ -985,14 +985,16 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	var d = Settings.defaultApp();
 	ok(d.spheres === false && d.sphereColor === '#9fd8ff', 'sphere defaults live in the schema', JSON.stringify([d.spheres, d.sphereColor]));
 	ok(Math.abs(d.sphereTrans - 0.25) < 1e-12, 'translucency default is 0.25', d.sphereTrans);
-	Settings.applyApp({ spheres: true, sphereColor: '#FF8800', sphereTrans: 2 }, App, w.GUI);
+	ok(Math.abs(d.sphereWall - 0.16) < 1e-12, 'wall thickness default is 0.16', d.sphereWall);
+	Settings.applyApp({ spheres: true, sphereColor: '#FF8800', sphereTrans: 2, sphereWall: 99 }, App, w.GUI);
 	ok(App.spheres === true, 'sphere toggle applies to the live app');
 	ok(App.sphereColor === '#ff8800', 'sphere tint sanitizes to lowercase hex', App.sphereColor);
 	ok(App.sphereTrans === 1, 'translucency clamps into 0..1', App.sphereTrans);
-	Settings.applyApp({ sphereColor: 'red', sphereTrans: 'lots' }, App, w.GUI);
-	ok(App.sphereColor === '#9fd8ff' && Math.abs(App.sphereTrans - 0.25) < 1e-12,
+	ok(App.sphereWall === 0.5, 'wall thickness clamps into 0.02..0.5', App.sphereWall);
+	Settings.applyApp({ sphereColor: 'red', sphereTrans: 'lots', sphereWall: 'lots' }, App, w.GUI);
+	ok(App.sphereColor === '#9fd8ff' && Math.abs(App.sphereTrans - 0.25) < 1e-12 && Math.abs(App.sphereWall - 0.16) < 1e-12,
 		'bad sphere values fall back to the schema defaults');
-	// panel rows (checkbox + color picker + slider)
+	// panel rows (checkbox + color picker + sliders)
 	var txt = '';
 	(function walk(n) {
 		if (n.textContent) txt += '|' + n.textContent;
@@ -1001,6 +1003,7 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	ok(txt.indexOf('glass spheres') >= 0, 'panel has the sphere toggle');
 	ok(txt.indexOf('sphere tint') >= 0, 'panel has the sphere tint color picker');
 	ok(txt.indexOf('translucency') >= 0, 'panel has the translucency slider');
+	ok(txt.indexOf('wall thickness') >= 0, 'panel has the wall thickness slider');
 	// render frames with spheres on, 2D and 3D (must not throw / break trails)
 	Settings.applyApp({ spheres: true, sphereTrans: 0.4 }, App, w.GUI);
 	w.tick(150, 16);
@@ -1008,19 +1011,22 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	App.setDim('3d');
 	w.tick(150, 16);
 	ok(App.allGears[1].count > 100, '3D trail keeps growing with spheres on', App.allGears[1].count);
-	// transient state: translucency / tint mid-flight through the setters
+	// transient state: translucency / tint / wall mid-flight through the setters
 	App.setSphereColor('#3366ff');
 	App.setSphereTrans(0.6);
+	App.setSphereWall(0.3);
 	w.tick(10, 16);
-	ok(App.sphereColor === '#3366ff' && Math.abs(App.sphereTrans - 0.6) < 1e-12, 'sphere setters drive the live app');
+	ok(App.sphereColor === '#3366ff' && Math.abs(App.sphereTrans - 0.6) < 1e-12 && Math.abs(App.sphereWall - 0.3) < 1e-12,
+		'sphere setters drive the live app');
 	// persisted through the app bag (autosave), restored to defaults
 	App.markDirty(); w.flushTimers(1000);
 	var stored = JSON.parse(w.localStorage._d['spiro.autosave.v1']);
 	ok(stored.app.spheres === true, 'sphere toggle autosaves in the app bag');
 	ok(Math.abs(stored.app.sphereTrans - 0.6) < 1e-9, 'translucency autosaves', stored.app.sphereTrans);
+	ok(Math.abs(stored.app.sphereWall - 0.3) < 1e-9, 'wall thickness autosaves', stored.app.sphereWall);
 	ok(stored.app.sphereColor === '#3366ff', 'sphere tint autosaves');
 	Settings.applyApp(Settings.defaultApp(), App, w.GUI);
-	ok(App.spheres === false && App.sphereColor === '#9fd8ff', 'restore-defaults applies the sphere schema');
+	ok(App.spheres === false && App.sphereColor === '#9fd8ff' && Math.abs(App.sphereWall - 0.16) < 1e-12, 'restore-defaults applies the sphere schema');
 	App.setDim('2d');
 	App.resetScene();
 	w.tick(5, 16);

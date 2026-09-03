@@ -173,6 +173,15 @@
 				return Math.max(0, Math.min(1, v));
 			},
 			apply: function (s, A, GUI) { A.sphereTrans = s.sphereTrans; GUI.setSphereTrans(s.sphereTrans); A.markDirty(); }
+		},
+		{
+			key: 'sphereWall', def: 0.16, persist: true,
+			get: function (A) { return A.sphereWall; },
+			clean: function (v) {
+				if (typeof v !== 'number' || !isFinite(v)) return undefined;
+				return Math.max(0.02, Math.min(0.5, v));
+			},
+			apply: function (s, A, GUI) { A.sphereWall = s.sphereWall; GUI.setSphereWall(s.sphereWall); A.markDirty(); }
 		}
 	];
 

@@ -49,7 +49,8 @@
 		drawTrails: false,
 		spheres: false,
 		sphereColor: '#9fd8ff',
-		sphereTrans: 0.25
+		sphereTrans: 0.25,
+		sphereWall: 0.16
 	};
 
 	var TAU = Math.PI * 2;
@@ -543,6 +544,11 @@
 		v = Math.max(0, Math.min(1, +v));
 		if (!isFinite(v) || v === App.sphereTrans) return;
 		App.sphereTrans = v; markDirty();
+	};
+	App.setSphereWall = function (v) {
+		v = Math.max(SPH_WALL_MIN, Math.min(SPH_WALL_MAX, +v));
+		if (!isFinite(v) || v === App.sphereWall) return;
+		App.sphereWall = v; markDirty();
 	};
 
 	// mode-appropriate default for the GLOBAL color mode. 'frequency' (hue/sec)
@@ -1774,7 +1780,8 @@
 	// parent read through its glass. a sphere's trail strand crossing depth
 	// layers is not depth-tested (the trail vertex stream has no z), which is
 	// fine for glass: "in front" vs "inside" differ only by one wall's tint.
-	var SPH_WALL = 0.16;                    // relative glass wall thickness
+	var SPH_WALL_MIN = 0.02;
+	var SPH_WALL_MAX = 0.5;
 	var sphKeys = new Float32Array(MAX_GEARS);   // sort keys (far -> near desc)
 	var sphCx = new Float32Array(MAX_GEARS);
 	var sphCy = new Float32Array(MAX_GEARS);
@@ -1785,7 +1792,7 @@
 	var sphBasis = { right: new Float32Array(3), up: new Float32Array(3), out: new Float32Array(3) };
 	var sphTint = new Float32Array([0.62, 0.85, 1.0]);
 	var sphTintParsed = '';
-	var sphUniforms = { right: sphBasis.right, up: sphBasis.up, out: sphBasis.out, tint: sphTint, opac: 0, wall: SPH_WALL, pass: 0 };
+	var sphUniforms = { right: sphBasis.right, up: sphBasis.up, out: sphBasis.out, tint: sphTint, opac: 0, wall: 0.16, pass: 0 };
 
 	function sphCmp(a, b) { return sphKeys[b] - sphKeys[a]; }
 
@@ -1860,6 +1867,7 @@
 		if (!App.spheres || !sphValid) return;
 		R.sphGrab();
 		sphUniforms.opac = 1 - App.sphereTrans;
+		sphUniforms.wall = SPH_WALL_MIN + App.sphereWall * (SPH_WALL_MAX - SPH_WALL_MIN);
 		sphUniforms.pass = pass;
 		R.sphDraw(sphUniforms);
 	}
