@@ -167,3 +167,50 @@
   one - the trail appears under a different transform than the spheres.
   retarget the camera once when a gear menu opens / closes (and rebake).
 
+## 3D trails vs spheres (0.7.1) - three bugs, one symptom
+- the 2D draw loops apply `cy0 - y * S`: they NEGATE y because world y is up
+  and screen y is down. an "identity" transform of S=1, cx0=cy0=0 is
+  therefore NOT an identity for a buffer that already holds screen pixels -
+  it mirrors every projected point to negative y (off the canvas / upside
+  down while the spheres, drawn through w2s3D, sit right). the transform now
+  carries an explicit y scale (`App.Sy`, -S in 2D) and pushIdentity sets
+  S = Sy = 1. verify with a probe that taps R.seg: every trail segment must
+  equal Camera3.projectPoint of the ring, to 1e-3 px.
+- never index a projection scratch by the source ring SLOT (`idx % cap`) and
+  then hand it to a loop that walks head..cap..0. the slots past the wrap
+  were never written by an incremental append (it projects only the new
+  points), so once the ring was full the loop read stale pixels for most of
+  the trail and the curve broke away from the gears. project into a LINEAR
+  buffer (logical k -> slot k - start) and read it with head 0.
+- the old bake bookkeeping had two states (`drawn` for a growing ring,
+  `drawnNewestRing` for a full one) and the 3D bake only implemented the
+  first: the moment the ring filled, `endK2 - start < 1` skipped the append
+  forever, and the picture froze at the old pen position while the spheres
+  kept moving. replaced by a monotonic per-gear `pushed` counter (in
+  pushPoint) and `baked` (= pushed at the last bake): the unbaked range is
+  the last `pushed - baked` points (+1 for the joining segment), clamped to
+  the ring - the same formula for 2D, 3D, growing, full and burst rings.
+- an incremental bake must not stamp the round end cap into the cached FBO:
+  a cap per appended chunk beads the line (the redraw mode never shows those
+  beads). bake with noCap and draw the tip live over the blit
+  (drawTrailTips). a chunk that starts mid-ring also preloads the previous
+  segment direction so the join disc at its first point matches a full draw.
+  proof: keep-mode and redraw-mode screenshots of the same wrapped ring must
+  be pixel-identical (headless chromium + swiftshader, /tmp/pw harness).
+- the overlay cache is a function of the VIEW. every camera motion has to
+  end in an invalidate - orbit/pan/wheel/pinch did, but auto-rotate OFF and a
+  pivot retarget did not - and the render now also compares a view key
+  (dim, S, pan, yaw, pitch, dist, target) against the one it baked with and
+  re-bakes on mismatch, so a forgotten caller degrades to "one extra full
+  bake" instead of "trail under a stale transform".
+- headless chromium for real WebGL2 screenshots without root: the
+  `@sparticuz/chromium` npm package ships a brotli'd chromium + swiftshader;
+  its `al2023.tar.br` holds the nss/nspr libs it needs - inflate it by hand
+  and export LD_LIBRARY_PATH=/tmp/al2023/lib, launch with puppeteer-core and
+  `--use-gl=angle --use-angle=swiftshader --enable-unsafe-swiftshader
+  --allow-file-access-from-files`. (the playwright CDN is blocked here.)
+- the trail line shader writes `gl_Position.z = 0` for every vertex, so
+  `R.depth(true)` around the 3D trail draw orders nothing (kept as a no-op
+  hook). true 3D occlusion between trail strands needs the projected depth
+  carried through projScratch into the vertex stream - a separate feature,
+  not part of the 3D-trail-position fix; do not document it as existing.

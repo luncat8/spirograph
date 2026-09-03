@@ -15,7 +15,10 @@
 		canvas: null,
 		size: 600,
 		dpr: 1,
-		S: 1, cx0: 0, cy0: 0,
+		// screen = (cx0 + (x + panX) * S, cy0 + (y + panY) * Sy). 2D sets
+		// Sy = -S (world y up, screen y down); the 3D trail draw installs a
+		// true identity (S = Sy = 1, no offset) over already-projected pixels.
+		S: 1, Sy: -1, cx0: 0, cy0: 0,
 		autosaveOK: true,
 		needsRender: false,
 		colorMode: 'frequency',
@@ -126,6 +129,7 @@
 
 	function recomputeTransform() {
 		App.S = (App.size / 2) * App.dpr * App.view.zoom;
+		App.Sy = -App.S;
 		App.cx0 = (App.size / 2) * App.dpr;
 		App.cy0 = (App.size / 2) * App.dpr;
 	}
@@ -419,9 +423,13 @@
 	function retargetCamera(g) {
 		App.orbitGear = (g && App.allGears.indexOf(g) >= 0) ? g : (App.roots[0] || null);
 		if (!App.cam) App.cam = Camera3.defaultCamera();
-		pivotOut(App.cam.target);
-		App.requestRender();
-		if (App.overlay.on) App.invalidateOverlay();
+		var t = App.cam.target;
+		var ox = t[0], oy = t[1], oz = t[2];
+		pivotOut(t);
+		// the view matrix only changes when the pivot actually moved (a menu
+		// refresh re-selects the same gear); a moved pivot is a camera move.
+		if (t[0] === ox && t[1] === oy && t[2] === oz) return;
+		settleCamera();
 	}
 	App.setOrbitGear = function (g) { retargetCamera(g); };
 
@@ -469,7 +477,18 @@
 		else { clearSubtree(gear); if (App.overlay.on) App.invalidateOverlay(); markDirty(); }
 	};
 
-	App.setAutoRotate = function (v) { App.autoRotate = !!v; App.requestRender(); };
+	// auto-rotate is a camera gesture that never "ends" by pointer: while it
+	// runs the trail draws directly, and switching it off must settle the
+	// camera (re-bake the overlay at the final yaw) exactly like a drag end,
+	// or the cached FBO from the yaw where it was switched ON stays blitted
+	// under spheres drawn at the yaw where it was switched OFF.
+	App.setAutoRotate = function (v) {
+		v = !!v;
+		if (v === App.autoRotate) return;
+		App.autoRotate = v;
+		if (v) { viewDirty = true; App.requestRender(); }
+		else settleCamera();
+	};
 
 	App.fitView = function () { startFit(true); };
 	App.resetCamera = function () {
@@ -641,9 +660,11 @@
 		// parent's nested frame.
 		var anc = parent, carry = anc ? (anc.phase != null ? anc.phase : anc.rot) : 0;
 		Gear.update(child, parent, parent.cx, parent.cy, carry, 0, App.globalSpeed);
-		// 3D: pose the whole added sub-tree (a clone may carry its own children);
-		// pose3All uses the parent link already wired by initRuntime.
-		if (App.dim === '3d') Gear.pose3All(child, parent);
+		// 3D: the new sub-tree must store xyz (stride 6) like the rest of the
+		// tree - a fresh gear defaults to the 2D stride and its trail would
+		// be skipped by every 3D draw - and gets a full pose (a clone may
+		// carry its own children; pose3All uses the parent link wired above).
+		if (App.dim === '3d') { Gear.setTreeStride([child], true); Gear.pose3All(child, parent); }
 		return child;
 	}
 
@@ -1261,7 +1282,14 @@
 	// are drawn ONLY where a segment turns sharply enough for the corner notch
 	// (radius `half`) to be visible: sin(turn) * half > 1.2 px. Dense traces
 	// never trigger it; sparse thick traces keep their rounded joins.
-	function drawGearSegments(g, startK, endK, half) {
+	// a chunk that starts mid-ring (incremental overlay append) preloads the
+	// direction of the segment before it, so the join disc at the chunk start
+	// fires exactly as it would in one full draw. `noCap` skips the round
+	// end-cap disc: an incremental bake must not stamp a cap into the cached
+	// pixels at every frame's chunk end (the live tip is drawn on screen by
+	// drawTrailTips instead), or the cached trail grows beads the redraw path
+	// never shows.
+	function drawGearSegments(g, startK, endK, half, noCap) {
 		var ring = g.ring;
 		if (!ring) return;
 		var cap = g.cap;
@@ -1271,7 +1299,7 @@
 		if (e <= s) return;
 
 		var panX = App.view.pan[0], panY = App.view.pan[1];
-		var S = App.S, cx0 = App.cx0, cy0 = App.cy0;
+		var S = App.S, Sy = App.Sy, cx0 = App.cx0, cy0 = App.cy0;
 
 		var idxA = head + s, idxB = head + s + 1;
 		if (idxA >= cap) idxA -= cap;
@@ -1285,12 +1313,18 @@
 		// sin(turn)^2 * len^2 * plen^2 > (1.2 px)^2  <=>  sin(turn)*half > 1.2 px.
 		var pdx = 0, pdy = 0, pLen2 = 0, havePrev = false;
 		var thr2 = half >= 1.0 ? 1.44 / (half * half) : Infinity;
+		if (s > 0) {
+			var idxP = idxA === 0 ? cap - 1 : idxA - 1;
+			pdx = ax - ring[idxP * 5]; pdy = ay - ring[idxP * 5 + 1];
+			pLen2 = pdx * pdx + pdy * pdy;
+			havePrev = true;
+		}
 
 		for (var k = s; k < e; k++) {
 			var s0x = cx0 + (ax + panX) * S;
-			var s0y = cy0 - (ay + panY) * S;
+			var s0y = cy0 + (ay + panY) * Sy;
 			var s1x = cx0 + (bx + panX) * S;
-			var s1y = cy0 - (by + panY) * S;
+			var s1y = cy0 + (by + panY) * Sy;
 
 			Rseg(s0x, s0y, s1x, s1y, half, ar, ag, ab, br, bg, bb, 1);
 
@@ -1320,9 +1354,9 @@
 		}
 
 		// round cap disc at the final endpoint so the tip is rounded.
-		if (half >= 1.0 && e > s) {
+		if (half >= 1.0 && !noCap) {
 			var ex = cx0 + (ax + panX) * S;
-			var ey = cy0 - (ay + panY) * S;
+			var ey = cy0 + (ay + panY) * Sy;
 			Rdot(ex, ey, half, ar, ag, ab, 1);
 		}
 	}
@@ -1338,16 +1372,16 @@
 		if (!g.ring) return;
 		var cap = g.cap, head = g.head, ring = g.ring;
 		var panX = App.view.pan[0], panY = App.view.pan[1];
-		var S = App.S, cx0 = App.cx0, cy0 = App.cy0;
+		var S = App.S, Sy = App.Sy, cx0 = App.cx0, cy0 = App.cy0;
 		var lastIa = -1;
 		for (var k = 0; k < n; k += step) {
 			var end = Math.min(k + step, n);
 			var ia = head + k;   if (ia >= cap) ia -= cap;
 			var ib = head + end; if (ib >= cap) ib -= cap;
 			var s0x = cx0 + (ring[ia * 5] + panX) * S;
-			var s0y = cy0 - (ring[ia * 5 + 1] + panY) * S;
+			var s0y = cy0 + (ring[ia * 5 + 1] + panY) * Sy;
 			var s1x = cx0 + (ring[ib * 5] + panX) * S;
-			var s1y = cy0 - (ring[ib * 5 + 1] + panY) * S;
+			var s1y = cy0 + (ring[ib * 5 + 1] + panY) * Sy;
 			Rseg(s0x, s0y, s1x, s1y, half,
 				ring[ia * 5 + 2], ring[ia * 5 + 3], ring[ia * 5 + 4],
 				ring[ib * 5 + 2], ring[ib * 5 + 3], ring[ib * 5 + 4], 1);
@@ -1357,7 +1391,7 @@
 		// end-cap disc at the last drawn point (keeps tip rounded under decimation)
 		if (half >= 1.0 && lastIa >= 0) {
 			var ex = cx0 + (ring[lastIa * 5] + panX) * S;
-			var ey = cy0 - (ring[lastIa * 5 + 1] + panY) * S;
+			var ey = cy0 + (ring[lastIa * 5 + 1] + panY) * Sy;
 			Rdot(ex, ey, half, ring[lastIa * 5 + 2], ring[lastIa * 5 + 3], ring[lastIa * 5 + 4], 1);
 		}
 	}
@@ -1496,19 +1530,30 @@
 		return w2sScratchC;
 	}
 
-	// project ring points [startK, endK) (logical ring order) into projScratch
-	// as screen pixels + copied rgb (stride 5), ready for the 2D draw loops via
-	// projGear. reads the stored world xyz; allocation-free (module scratch).
+	// project logical ring points [startK, endK) into projScratch as screen
+	// pixels + copied rgb (stride 5). the output is LINEAR: logical point k
+	// lands in slot k - startK, so projGear is read with head 0. indexing the
+	// output by the source ring SLOT (idx % cap) was the 3D trail bug: once
+	// the ring had wrapped, the 2D loop walked head..cap..0 through a buffer
+	// whose slots past the wrap were stale, and the trail broke away from
+	// the spheres. reads the stored world xyz; allocation-free.
 	function projectRing(g, startK, endK) {
 		var ring = g.ring, cap = g.cap, head = g.head;
 		var e = Math.min(endK, g.count);
+		var idx = head + startK;
+		if (idx >= cap) idx -= cap;
+		var o5 = 0;
 		for (var k = startK; k < e; k++) {
-			var idx = (head + k) % cap;
-			var o6 = idx * 6, o5 = idx * 5;
+			var o6 = idx * 6;
 			Camera3.projectPoint(matM, ring[o6], ring[o6 + 1], ring[o6 + 2], projPoint);
 			projScratch[o5] = projPoint[0]; projScratch[o5 + 1] = projPoint[1];
 			projScratch[o5 + 2] = ring[o6 + 3]; projScratch[o5 + 3] = ring[o6 + 4]; projScratch[o5 + 4] = ring[o6 + 5];
+			o5 += 5;
+			if (++idx >= cap) idx = 0;
 		}
+		projGear.head = 0;
+		projGear.count = e - startK;
+		return projGear.count;
 	}
 
 	// world-space bounding radius of the trail (or the sphere train fallback)
@@ -1652,21 +1697,14 @@
 			if (!(g.pencil.c1.on || g.pencil.c2.on)) continue;
 			if (g.count < 2 || g.stride !== 6) continue;
 			var half = Math.max(0.5, (g.pencil.width / 2) * App.dpr);
-			if (reset) {
-				var endK = g.count < g.cap ? g.count : g.cap;
-				projectRing(g, 0, endK);
-				projGear.head = g.head; projGear.count = endK;
-				pushIdentity(); drawGearSegments(projGear, 0, endK - 1, half); popIdentity();
-				g.drawn = g.count - 1;
-			} else {
-				var start = g.drawn;
-				var endK2 = g.count < g.cap ? g.count : g.cap;
-				if (endK2 - start < 1) continue;
-				projectRing(g, start, endK2);
-				projGear.head = g.head; projGear.count = endK2;
-				pushIdentity(); drawGearSegments(projGear, start, endK2 - 1, half); popIdentity();
-				g.drawn = endK2 - 1;
-			}
+			var startK = reset ? 0 : unbakedStart(g);
+			if (startK < 0) continue;
+			// one point before the chunk so the join test at its first point
+			// sees the previous direction (projGear is linear from `from`).
+			var from = startK > 0 ? startK - 1 : 0;
+			var n = projectRing(g, from, g.count);
+			pushIdentity(); drawGearSegments(projGear, startK - from, n - 1, half, true); popIdentity();
+			g.baked = g.pushed;
 			Rflush();
 		}
 	}
@@ -1674,14 +1712,18 @@
 	// the projected buffer already holds screen pixels, so the 2D draw loops
 	// must run with an identity transform. save the real transform / restore it
 	// around a 3D trail draw (no per-frame closure; module scratch holds it).
-	var xformSave = { S: 1, pan: ZERO_PAN, cx0: 0, cy0: 0 };
+	// a TRUE identity: Sy = +1 as well. the 2D transform negates y (world y
+	// up vs screen y down); projected pixels are already screen-down, and the
+	// old S=1-only identity mirrored every 3D trail to negative y (off the
+	// canvas / upside down relative to the spheres).
+	var xformSave = { S: 1, Sy: -1, pan: ZERO_PAN, cx0: 0, cy0: 0 };
 	function pushIdentity() {
-		xformSave.S = App.S; xformSave.pan = App.view.pan;
+		xformSave.S = App.S; xformSave.Sy = App.Sy; xformSave.pan = App.view.pan;
 		xformSave.cx0 = App.cx0; xformSave.cy0 = App.cy0;
-		App.S = 1; App.view.pan = ZERO_PAN; App.cx0 = 0; App.cy0 = 0;
+		App.S = 1; App.Sy = 1; App.view.pan = ZERO_PAN; App.cx0 = 0; App.cy0 = 0;
 	}
 	function popIdentity() {
-		App.S = xformSave.S; App.view.pan = xformSave.pan;
+		App.S = xformSave.S; App.Sy = xformSave.Sy; App.view.pan = xformSave.pan;
 		App.cx0 = xformSave.cx0; App.cy0 = xformSave.cy0;
 	}
 
@@ -1700,77 +1742,64 @@
 			var g3 = App.allGears[gj];
 			if (!(g3.pencil.c1.on || g3.pencil.c2.on) || g3.stride !== 6 || g3.count < 2) continue;
 			var half3 = Math.max(0.5, (g3.pencil.width / 2) * App.dpr);
-			var endK = g3.count < g3.cap ? g3.count : g3.cap;
-			projectRing(g3, 0, endK);
-			projGear.head = g3.head; projGear.count = endK;
+			var n = projectRing(g3, 0, g3.count);
 			pushIdentity();
 			if (decimate) drawGearSegmentsDecimated(projGear, half3, perGearBudget);
-			else drawGearSegments(projGear, 0, endK - 1, half3);
+			else drawGearSegments(projGear, 0, n - 1, half3);
 			popIdentity();
 			Rflush();
 		}
 	}
 
-	function renderScene3D() {
-		if (!App.cam) App.cam = Camera3.defaultCamera();
-		ensureProjBuffer();
-		Camera3.setViewport(App.size * App.dpr, App.size * App.dpr);
-		// the orbit target is a fixed pivot set at selection (retargetCamera);
-		// do not chase the moving gear here or the baked trail desyncs.
-		Camera3.viewProj(matM, App.cam, App.size * App.dpr, App.size * App.dpr);
+	// ---- render modes (shared by 2D and 3D) --------------------------------
+	// two ways to put the trail on screen:
+	//   overlay ON  ("keep"): the trail is baked into a cached FBO once per
+	//     view and only the points pushed since the last bake are appended
+	//     each frame; the FBO is blitted under the live gear skeleton. any
+	//     change of the view transform (2D pan/zoom, 3D camera orbit / dolly
+	//     / pan / fit / auto-rotate / pivot change) invalidates the cache.
+	//   overlay OFF ("redraw"): the whole ring is re-projected and redrawn
+	//     from scratch every render (bounded by the trail cap).
+	// during an active gesture both modes draw directly (decimated when the
+	// ring is bigger than the tuned budget) and the overlay re-bakes once on
+	// settle. the 3D variant projects the world ring through the camera into
+	// projScratch first and draws under a true identity transform.
 
-		if (!App.drawTrails) {
-			R.begin(BG);
-			drawSkeleton3D();
-			Rflush();
-			if (App.showPoints) drawPenPoints3D();
-			return;
-		}
-		if (isGestureActive()) {
-			// direct draw at the live camera; decimate big trails like 2D.
-			R.begin(BG);
-			R.depth(true);
-			drawTrails3D(GESTURE_SEG_BUDGET_3D);
-			R.depth(false);
-			drawSkeleton3D();
-			Rflush();
-			if (App.showPoints) drawPenPoints3D();
-			return;
-		}
-		if (App.overlay.on) {
-			R.overlay.bind();
-			if (App.overlay.invalid) {
-				R.depth(true);
-				R.overlay.clear();
-				for (var i = 0; i < App.allGears.length; i++) {
-					App.allGears[i].drawn = 0;
-					App.allGears[i].drawnNewestRing = undefined;
-				}
-				App.overlay.invalid = false;
-				bakeOverlay3D(true);
-				R.depth(false);
-				viewDirty = false;
-			} else {
-				R.depth(true);
-				bakeOverlay3D(false);
-				R.depth(false);
-			}
-			R.overlay.unbind();
-			R.begin(BG);
-			R.overlay.blitToScreen();
-			drawSkeleton3D();
-			Rflush();
-			if (App.showPoints) drawPenPoints3D();
-			return;
-		}
-		// overlay off: full direct draw each invalidation.
-		R.begin(BG);
-		R.depth(true);
-		drawTrails3D(0);
-		R.depth(false);
-		drawSkeleton3D();
-		Rflush();
-		if (App.showPoints) drawPenPoints3D();
+	// the cached overlay is only valid for the view it was baked with. every
+	// code path that moves the view is supposed to invalidate it (gesture
+	// end, wheel settle, fit ease, auto-rotate stop, pivot change, resize),
+	// but the render checks the actual key too: a bake under a stale view is
+	// exactly the "trail drawn under a different transform than the gears"
+	// failure, and this makes the cache correct by construction rather than
+	// by every caller remembering. plain fields, mutated in place.
+	var bakedView = { dim: '', S: 0, cx0: 0, panX: 0, panY: 0, yaw: 0, pitch: 0, dist: 0, tx: 0, ty: 0, tz: 0 };
+	function rememberBakedView(is3) {
+		bakedView.dim = App.dim;
+		bakedView.S = App.S; bakedView.cx0 = App.cx0;
+		bakedView.panX = App.view.pan[0]; bakedView.panY = App.view.pan[1];
+		if (!is3) return;
+		var c = App.cam;
+		bakedView.yaw = c.yaw; bakedView.pitch = c.pitch; bakedView.dist = c.dist;
+		bakedView.tx = c.target[0]; bakedView.ty = c.target[1]; bakedView.tz = c.target[2];
+	}
+	function viewMatchesBake(is3) {
+		if (bakedView.dim !== App.dim || bakedView.S !== App.S || bakedView.cx0 !== App.cx0) return false;
+		if (bakedView.panX !== App.view.pan[0] || bakedView.panY !== App.view.pan[1]) return false;
+		if (!is3) return true;
+		var c = App.cam;
+		return bakedView.yaw === c.yaw && bakedView.pitch === c.pitch && bakedView.dist === c.dist &&
+			bakedView.tx === c.target[0] && bakedView.ty === c.target[1] && bakedView.tz === c.target[2];
+	}
+
+	// first logical ring index the overlay has not painted yet, or -1 when
+	// nothing new arrived. `pushed - baked` points are new; the segment that
+	// joins them to the last baked point starts one before. eviction only
+	// drops points older than that (the ring keeps >= count points), so the
+	// index is clamped, never wrapped.
+	function unbakedStart(g) {
+		var fresh = g.pushed - g.baked;
+		if (fresh <= 0) return -1;
+		return Math.max(0, g.count - fresh - 1);
 	}
 
 	function bakeOverlay(reset) {
@@ -1779,96 +1808,117 @@
 			if (!(g.pencil.c1.on || g.pencil.c2.on)) continue;
 			if (g.count < 2) continue;
 			var half = Math.max(0.5, (g.pencil.width / 2) * App.dpr);
-			if (reset) {
-				if (g.count < g.cap) {
-					drawGearSegments(g, 0, g.count - 1, half);
-					g.drawn = g.count - 1;
-				} else {
-					drawGearSegments(g, 0, g.cap - 1, half);
-					g.drawnNewestRing = (g.head + g.cap - 1) % g.cap;
-				}
-			} else {
-				if (g.count < g.cap) {
-					drawGearSegments(g, g.drawn, g.count - 1, half);
-					g.drawn = g.count - 1;
-				} else {
-					var newest = (g.head + g.cap - 1) % g.cap;
-					if (newest !== g.drawnNewestRing) {
-						drawGearSegments(g, g.cap - 2, g.cap - 1, half);
-						g.drawnNewestRing = newest;
-					}
-				}
-			}
-			R.flush();
+			var startK = reset ? 0 : unbakedStart(g);
+			if (startK < 0) continue;
+			drawGearSegments(g, startK, g.count - 1, half, true);
+			g.baked = g.pushed;
+			Rflush();
 		}
 	}
 
-	function renderScene() {
-		if (App.dim === '3d') return renderScene3D();
-		if (!App.drawTrails) {                 // trail hidden: gear skeleton + points only
-			R.begin(BG);
-			drawGearOverlay();
-			R.flush();
-			if (App.showPoints) drawPenPoints();
-			return;
+	// full direct draw of every trail at the live 2D view; decimated when the
+	// total segment count exceeds `budget` (0 = never decimate).
+	function drawTrails2D(budget) {
+		var pencilGears = 0, totalSegs = 0;
+		for (var gi = 0; gi < App.allGears.length; gi++) {
+			var gg = App.allGears[gi];
+			if (!(gg.pencil.c1.on || gg.pencil.c2.on)) continue;
+			pencilGears++;
+			totalSegs += Math.max(0, gg.count - 1);
 		}
-		if (isGestureActive()) {               // gesture: draw ring directly at live view
-			R.begin(BG);
-			var pencilGears = 0, totalSegs = 0;
-			for (var gi = 0; gi < App.allGears.length; gi++) {
-				var gg = App.allGears[gi];
-				if (!(gg.pencil.c1.on || gg.pencil.c2.on)) continue;
-				pencilGears++;
-				totalSegs += Math.max(0, gg.count - 1);
-			}
-			var decimate = totalSegs > GESTURE_SEG_BUDGET;
-			var perGearBudget = Math.max(1, Math.floor(GESTURE_SEG_BUDGET / Math.max(1, pencilGears)));
-			for (var gi = 0; gi < App.allGears.length; gi++) {
-				var gg = App.allGears[gi];
-				if (!(gg.pencil.c1.on || gg.pencil.c2.on)) continue;
-				var half = Math.max(0.5, (gg.pencil.width / 2) * App.dpr);
-				if (decimate) drawGearSegmentsDecimated(gg, half, perGearBudget);
-				else drawGearSegments(gg, 0, gg.count - 1, half);
-				R.flush();
-			}
-			drawGearOverlay();
-			R.flush();
-			if (App.showPoints) drawPenPoints();
-			return;
-		}
-		if (App.overlay.on) {
-			R.overlay.bind();
-			if (App.overlay.invalid) {
-				R.overlay.clear();
-				for (var i = 0; i < App.allGears.length; i++) {
-					App.allGears[i].drawn = 0;
-					App.allGears[i].drawnNewestRing = undefined;
-				}
-				App.overlay.invalid = false;
-				bakeOverlay(true);
-				viewDirty = false;   // overlay now matches the settled view
-			} else {
-				bakeOverlay(false);
-			}
-			R.overlay.unbind();
-			R.begin(BG);
-			R.overlay.blitToScreen();
-			drawGearOverlay();
-			R.flush();
-			if (App.showPoints) drawPenPoints();
-			return;
-		}
-		R.begin(BG);
+		var decimate = budget > 0 && totalSegs > budget;
+		var perGearBudget = Math.max(1, Math.floor(budget / Math.max(1, pencilGears)));
 		for (var i = 0; i < App.allGears.length; i++) {
 			var g = App.allGears[i];
 			if (!(g.pencil.c1.on || g.pencil.c2.on)) continue;
 			var half = Math.max(0.5, (g.pencil.width / 2) * App.dpr);
-			drawGearSegments(g, 0, g.count - 1, half);
-			R.flush();
+			if (decimate) drawGearSegmentsDecimated(g, half, perGearBudget);
+			else drawGearSegments(g, 0, g.count - 1, half);
+			Rflush();
 		}
-		drawGearOverlay();
-		R.flush();
-		if (App.showPoints) drawPenPoints();
+	}
+
+	// keep mode draws the trail into the FBO without end caps (a cap baked at
+	// every append would bead the cached line). the round tip of each trail
+	// is drawn live on screen instead, at the newest ring point, so the
+	// cached picture matches what the redraw mode paints.
+	function drawTrailTips(is3) {
+		for (var i = 0; i < App.allGears.length; i++) {
+			var g = App.allGears[i];
+			if (!(g.pencil.c1.on || g.pencil.c2.on) || g.count < 2) continue;
+			var half = Math.max(0.5, (g.pencil.width / 2) * App.dpr);
+			if (half < 1.0) continue;
+			var st = g.stride, o = ((g.head + g.count - 1) % g.cap) * st;
+			var sx, sy;
+			if (is3) { var sc = w2s3D(g.ring[o], g.ring[o + 1], g.ring[o + 2]); sx = sc.x; sy = sc.y; }
+			else {   // inline w2s (no per-frame object)
+				sx = App.cx0 + (g.ring[o] + App.view.pan[0]) * App.S;
+				sy = App.cy0 + (g.ring[o + 1] + App.view.pan[1]) * App.Sy;
+			}
+			Rdot(sx, sy, half, g.ring[o + st - 3], g.ring[o + st - 2], g.ring[o + st - 1], 1);
+		}
+	}
+
+	// gear skeleton + pen markers on top of whatever trail pass ran.
+	function drawGuides(is3) {
+		if (is3) drawSkeleton3D(); else drawGearOverlay();
+		Rflush();
+		if (!App.showPoints) return;
+		if (is3) drawPenPoints3D(); else drawPenPoints();
+	}
+
+	function drawTrailsDirect(is3, budget) {
+		if (is3) { R.depth(true); drawTrails3D(budget); R.depth(false); }
+		else drawTrails2D(budget);
+	}
+
+	function bakeTrails(is3, reset) {
+		if (is3) { R.depth(true); bakeOverlay3D(reset); R.depth(false); }
+		else bakeOverlay(reset);
+	}
+
+	function renderScene() {
+		var is3 = App.dim === '3d';
+		if (is3) {
+			if (!App.cam) App.cam = Camera3.defaultCamera();
+			ensureProjBuffer();
+			Camera3.setViewport(App.size * App.dpr, App.size * App.dpr);
+			// the orbit target is a fixed pivot set at selection (retargetCamera);
+			// do not chase the moving gear here or the baked trail desyncs.
+			Camera3.viewProj(matM, App.cam, App.size * App.dpr, App.size * App.dpr);
+		}
+		if (!App.drawTrails) {                 // trail hidden: skeleton + points only
+			R.begin(BG);
+			drawGuides(is3);
+			return;
+		}
+		if (isGestureActive()) {               // gesture: direct draw at the live view
+			R.begin(BG);
+			drawTrailsDirect(is3, is3 ? GESTURE_SEG_BUDGET_3D : GESTURE_SEG_BUDGET);
+			drawGuides(is3);
+			return;
+		}
+		if (App.overlay.on) {                  // keep mode: cached FBO + append
+			R.overlay.bind();
+			if (App.overlay.invalid || !viewMatchesBake(is3)) {
+				R.overlay.clear();
+				App.overlay.invalid = false;
+				bakeTrails(is3, true);
+				rememberBakedView(is3);
+				viewDirty = false;             // overlay now matches the settled view
+			} else {
+				bakeTrails(is3, false);
+			}
+			R.overlay.unbind();
+			R.begin(BG);
+			R.overlay.blitToScreen();
+			drawTrailTips(is3);
+			drawGuides(is3);
+			return;
+		}
+		R.begin(BG);                           // redraw mode: full trail every render
+		drawTrailsDirect(is3, 0);
+		drawGuides(is3);
 	}
 
 	function frame(now) {

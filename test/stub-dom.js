@@ -134,14 +134,31 @@ function boot(opts) {
 	sandbox.document.body.innerHTML = '';
 	vm.createContext(sandbox);
 	var root = path.join(__dirname, '..');
-	['js/settings.js', 'js/gear.js', 'js/render.js', 'js/camera3.js', 'js/gui.js', 'js/main.js'].forEach(function (f) {
-		vm.runInContext(fs.readFileSync(path.join(root, f), 'utf8'), sandbox, { filename: f });
-	});
-	// run pending rAF callbacks n times (drives the frame loop by hand)
+	function load(f) { vm.runInContext(fs.readFileSync(path.join(root, f), 'utf8'), sandbox, { filename: f }); }
+	['js/settings.js', 'js/gear.js', 'js/render.js', 'js/camera3.js'].forEach(load);
+	// segment tap: main.js hoists R.seg into a local at load time, so the
+	// wrapper must be installed BEFORE main.js runs. every seg call (trail
+	// and guides alike) lands in sandbox.segLog while sandbox.segTrace is on;
+	// each entry is [x0, y0, x1, y1, identity] with identity = true when the
+	// 3D trail draw had its identity transform installed (cx0 === 0).
+	sandbox.segLog = [];
+	sandbox.segTrace = false;
+	var realSeg = sandbox.R.seg;
+	sandbox.R.seg = function (x0, y0, x1, y1) {
+		if (sandbox.segTrace) sandbox.segLog.push([x0, y0, x1, y1, sandbox.App ? sandbox.App.cx0 === 0 : false]);
+		return realSeg.apply(this, arguments);
+	};
+	['js/gui.js', 'js/main.js'].forEach(load);
+	// run pending rAF callbacks n times (drives the frame loop by hand).
+	// the frame timestamp is a monotonic sandbox clock advancing dtMs per
+	// tick, so every tick is a real dt (two ticks in the same wall-clock
+	// millisecond used to yield dt = 0: no rotation, no new trail point).
+	var clock = Date.now();
 	sandbox.tick = function (n, dtMs) {
 		for (var i = 0; i < (n || 1); i++) {
+			clock += (dtMs || 16);
 			var due = frames.splice(0, frames.length);
-			for (var j = 0; j < due.length; j++) due[j](Date.now() + i * (dtMs || 16));
+			for (var j = 0; j < due.length; j++) due[j](clock);
 		}
 	};
 	sandbox.byId = byId;

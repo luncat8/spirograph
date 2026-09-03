@@ -1,5 +1,24 @@
 # CHANGELOG
 
+## 0.7.1 - 3D trails match the spheres; render modes unified
+- **3D trail fix (for real).** three independent defects put the baked 3D
+  trail somewhere other than the spheres: the "identity" transform installed
+  for the projected buffer still applied the 2D y flip (trail mirrored to
+  negative y); the projection scratch was indexed by ring slot and read
+  through a wrapped head (stale pixels for most of a full ring); and the
+  incremental overlay bake stopped appending once the ring was full (trail
+  frozen while the gears moved on). trails now project into a linear buffer
+  under a true identity (`App.Sy`), and the bake uses a monotonic
+  `pushed`/`baked` counter shared by 2D and 3D.
+- **two render modes, one dispatcher.** overlay ON = keep (cached FBO, append
+  only the new points, invalidated by any view change incl. camera orbit /
+  dolly / pan / fit / auto-rotate / pivot change, and guarded by a view key);
+  overlay OFF = redraw (whole ring every render). the keep-mode picture is now
+  pixel-identical to the redraw-mode picture (no per-chunk end caps in the
+  cache; the tip is drawn live).
+- gears added while in 3D store 3D trails (stride 6) instead of being skipped.
+- test harness: deterministic frame clock + segment tap; 186 headless checks.
+
 ## 0.7.0 - true 3D generalization (two rotation axes per gear)
 
 The 0.6 approach (one global spin speed sweeping the flat figure into a

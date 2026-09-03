@@ -643,6 +643,172 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	App.resetScene();
 })();
 
+// ---- 3D trail pixels == projected ring == sphere pen (render modes) ---
+// the 3D trail is drawn by projecting the world ring through the camera and
+// feeding the 2D segment loop under an identity transform. every segment
+// the renderer receives must be exactly the projection of the ring, in BOTH
+// render modes (overlay bake + append, and full redraw), also once the ring
+// has wrapped (head != 0) - the two defects behind "trails do not match the
+// spheres" were a mirrored y (identity kept the 2D y flip) and a projection
+// buffer indexed by ring SLOT, which the 2D loop then read through a wrapped
+// head. a third one skipped the incremental append entirely once the ring
+// was full.
+(function trail3DMatchesProjection() {
+	function projectAll(g) {
+		var W = App.size * App.dpr, m = new Float32Array(16), p = [0, 0], out = [];
+		Camera3.setViewport(W, W); Camera3.viewProj(m, App.cam, W, W);
+		for (var k = 0; k < g.count; k++) {
+			var idx = (g.head + k) % g.cap;
+			Camera3.projectPoint(m, g.ring[idx * 6], g.ring[idx * 6 + 1], g.ring[idx * 6 + 2], p);
+			out.push([p[0], p[1]]);
+		}
+		return out;
+	}
+	function trailSegs() { return w.segLog.filter(function (e) { return e[4]; }); }
+	function worstErr(segs, pts, offset) {
+		var worst = 0;
+		for (var k = 0; k < segs.length; k++) {
+			var a = pts[offset + k], b = pts[offset + k + 1], sg = segs[k];
+			if (!a || !b) return Infinity;
+			worst = Math.max(worst, Math.hypot(sg[0] - a[0], sg[1] - a[1]), Math.hypot(sg[2] - b[0], sg[3] - b[1]));
+		}
+		return worst;
+	}
+	App.resetScene();
+	App.setDim('3d');
+	App.setShowCircles(false);
+	var g = App.roots[0].children[0];
+	App.setTrailCap(g, 500); App.onGearParam(g, 'trail');
+	w.tick(700, 16);                                   // 700 pushes into a 500 ring -> wrapped
+	ok(g.count === g.cap && g.head > 0, '3D test ring is full and wrapped', g.count + '/' + g.cap + ' head ' + g.head);
+
+	// keep mode, full re-bake at the settled camera
+	w.segTrace = true; w.segLog.length = 0;
+	App.invalidateOverlay(); w.tick(1, 16);
+	var segs = trailSegs(), pts = projectAll(g);
+	ok(segs.length === g.count - 1, 'overlay rebake paints every ring segment', segs.length + ' vs ' + (g.count - 1));
+	var e1 = worstErr(segs, pts, 0);
+	ok(e1 < 1e-3, '3D baked trail pixels equal the camera projection of the ring (no y mirror, no wrap garbage)', e1.toFixed(3) + ' px');
+	var onCanvas = segs.every(function (sg) { return sg[1] >= 0 && sg[3] >= 0 && sg[1] <= App.size * App.dpr && sg[3] <= App.size * App.dpr; });
+	ok(onCanvas, 'projected trail lies inside the canvas (was at negative y)');
+
+	// keep mode, incremental append while the ring is full: one new point per
+	// frame -> one appended segment that ends at the live pen sphere.
+	var perFrame = [];
+	for (var f = 0; f < 5; f++) { w.segLog.length = 0; w.tick(1, 16); perFrame.push(trailSegs().length); }
+	ok(perFrame.every(function (n) { return n === 1; }), 'full ring still appends the newest segment each frame', perFrame.join(','));
+	var last = trailSegs()[0];
+	var W = App.size * App.dpr, m = new Float32Array(16), pen = [0, 0];
+	Camera3.setViewport(W, W); Camera3.viewProj(m, App.cam, W, W);
+	Camera3.projectPoint(m, g.pen3[0], g.pen3[1], g.pen3[2], pen);
+	ok(Math.hypot(last[2] - pen[0], last[3] - pen[1]) < 1e-3, 'appended segment ends exactly at the projected pen (trail meets the sphere)',
+		Math.hypot(last[2] - pen[0], last[3] - pen[1]).toFixed(3) + ' px');
+
+	// redraw mode (overlay off): the whole ring every render, same pixels.
+	App.setOverlay(false);
+	w.segLog.length = 0; w.tick(1, 16);
+	var segs2 = trailSegs(), pts2 = projectAll(g);
+	ok(segs2.length === g.count - 1, 'overlay-off redraw paints every ring segment', segs2.length);
+	var e2 = worstErr(segs2, pts2, 0);
+	ok(e2 < 1e-3, 'overlay-off 3D trail equals the projection too', e2.toFixed(3) + ' px');
+	App.setOverlay(true);
+
+	// after an orbit the cached overlay is stale: it must be re-baked at the
+	// new camera on settle, and the new bake must again match the projection.
+	var yaw0 = App.cam.yaw;
+	Camera3.orbitBy(App.cam, 0.7, 0.2);
+	App.invalidateOverlay();                          // what onUp / settleCamera do after the gesture
+	w.segLog.length = 0; w.tick(1, 16);
+	var segs3 = trailSegs(), pts3 = projectAll(g);
+	ok(Math.abs(App.cam.yaw - yaw0) > 0.5 && worstErr(segs3, pts3, 0) < 1e-3, 'rebake after orbit follows the new camera',
+		worstErr(segs3, pts3, 0).toFixed(3) + ' px');
+	w.segTrace = false; w.segLog.length = 0;
+	App.setShowCircles(true);
+	App.setDim('2d');
+	App.resetScene();
+})();
+
+// ---- camera moves always invalidate the cached overlay --------------
+(function cameraMovesInvalidateOverlay() {
+	App.resetScene();
+	App.setDim('3d');
+	w.tick(30, 16);
+	ok(!App.overlay.invalid, 'overlay is settled after entering 3D');
+	// auto-rotate: on = gesture (direct draw), off = settle -> rebake.
+	App.setAutoRotate(true);
+	w.tick(20, 16);
+	App.setAutoRotate(false);
+	ok(App.overlay.invalid, 'stopping auto-rotate re-bakes the overlay at the final yaw');
+	w.tick(2, 16);
+	// selecting a gear moves the orbit pivot -> the view matrix changed.
+	var kid = App.roots[0].children[0];
+	w.GUI.openMenu(kid, 50, 50);
+	ok(App.overlay.invalid, 'moving the orbit pivot to a gear re-bakes');
+	w.tick(2, 16);
+	// re-opening the same gear (menu refresh) keeps the pivot: no needless rebake.
+	w.GUI.openMenu(kid, 50, 50);
+	ok(!App.overlay.invalid, 'same pivot again does not thrash the bake');
+	w.GUI.closeMenu();
+	ok(App.overlay.invalid, 'pivot back to the root re-bakes');
+	w.tick(2, 16);
+	// belt and braces: even a camera change that forgot to invalidate (a
+	// direct write to App.cam) is caught by the render's view key - the
+	// next settled frame re-bakes the whole ring instead of appending.
+	w.segTrace = true;
+	function trailCount() { return w.segLog.filter(function (e) { return e[4]; }).length; }
+	var kid2 = App.roots[0].children[0];
+	w.segLog.length = 0; w.tick(1, 16);
+	var appended = trailCount();
+	App.cam.yaw += 0.3;                              // no invalidate call on purpose
+	w.segLog.length = 0; w.tick(1, 16);
+	ok(appended <= 2 && trailCount() >= kid2.count - 2, 'a stale view key forces a full re-bake even without an explicit invalidate',
+		appended + ' -> ' + trailCount() + ' segs for ' + kid2.count + ' points');
+	w.segTrace = false; w.segLog.length = 0;
+	App.setDim('2d');
+	App.resetScene();
+})();
+
+// ---- gears added while in 3D store 3D trails ---------------------------
+(function addedGearsGet3DRings() {
+	App.resetScene();
+	App.setDim('3d');
+	w.tick(30, 16);
+	App.applyLevel(1, 3);
+	App.addSubGear(App.roots[0].children[1]);
+	w.tick(60, 16);
+	var strides = App.allGears.map(function (g) { return g.stride; });
+	ok(strides.every(function (st) { return st === 6; }), 'gears added in 3D use stride-6 rings (their trails draw)', strides.join(','));
+	var drawn = App.allGears.filter(function (g) { return (g.pencil.c1.on || g.pencil.c2.on) && g.count > 10; }).length;
+	var pencils = App.allGears.filter(function (g) { return g.pencil.c1.on || g.pencil.c2.on; }).length;
+	ok(drawn === pencils, 'every pencil added in 3D grows a trail', drawn + '/' + pencils);
+	w.GUI.closeMenu();
+	App.setDim('2d');
+	App.resetScene();
+})();
+
+// ---- 2D overlay append across a full (wrapped) ring -------------------
+(function overlayAppendWrapped2D() {
+	App.resetScene();
+	App.setShowCircles(false);
+	var g = App.roots[0].children[0];
+	App.setTrailCap(g, 500); App.onGearParam(g, 'trail');
+	w.tick(700, 16);
+	ok(g.count === g.cap && g.head > 0, '2D test ring is full and wrapped');
+	w.segTrace = true;
+	w.segLog.length = 0; App.invalidateOverlay(); w.tick(1, 16);
+	ok(w.segLog.length === g.count - 1, '2D overlay rebake paints the whole ring', w.segLog.length);
+	var per = [];
+	for (var f = 0; f < 4; f++) { w.segLog.length = 0; w.tick(1, 16); per.push(w.segLog.length); }
+	ok(per.every(function (n) { return n === 1; }), '2D full ring appends exactly the newest segment per frame', per.join(','));
+	// a burst of several points between two renders is appended whole.
+	for (var i = 0; i < 12; i++) w.Gear.pushPoint(g, 0.3 + i * 0.01, 0.1, [1, 1, 1]);
+	w.segLog.length = 0; w.tick(1, 16);
+	ok(w.segLog.length >= 12, 'a multi-point burst is appended completely', w.segLog.length);
+	w.segTrace = false; w.segLog.length = 0;
+	App.setShowCircles(true);
+	App.resetScene();
+})();
+
 // ---- max period is a ceiling, not a target ---------------------------
 (function maxPeriodCeiling() {
 	App.resetScene();

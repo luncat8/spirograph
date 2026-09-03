@@ -34,8 +34,10 @@ draw hypotrochoid / epitrochoid curves in the browser. no build step.
 	  3D point streams (x y z rgb), gears draw as sphere-outline circles; the
 	  orbit camera (drag orbit, wheel/pinch dolly, right/middle drag pan,
 	  auto-rotate, fit) pivots on the selected gear's sphere centre (else the
-	  root), and trails are depth-sorted via an overlay depth buffer; with all
-	  tilt speeds 0 the figure is exactly the flat 2D curve standing upright
+	  root); trails are painted in stroke order (no depth sorting: the line
+	  shader emits a flat z, so nearer curves do not occlude farther ones);
+	  with all tilt speeds 0 the figure is exactly the flat 2D curve
+	  standing upright
 	zero dependencies, WebGL2, runs from file://
 
 
@@ -151,6 +153,21 @@ smooth antialiased lines
 draw modes:
 
 * animated draw similar to pencil using last N segments or FBO draw
+
+	two render modes, both in 2D and 3D (`bake full figure (overlay)`
+	checkbox):
+
+	keep (overlay ON, default) - the trail is baked into a cached
+	framebuffer once per view; every frame only the points pushed since the
+	last bake are appended, then the cache is blitted under the live gear
+	skeleton. any change of the view (2D pan/zoom, 3D orbit / dolly / pan /
+	fit / auto-rotate / orbit pivot) invalidates the cache and it is re-baked
+	once the gesture settles (during the gesture the trail is drawn directly,
+	decimated when it is bigger than the device budget).
+
+	redraw (overlay OFF) - the whole ring (bounded by the trail length) is
+	re-projected and redrawn from scratch on every render. same picture as
+	keep, more GPU work per frame, no cache to invalidate.
 
 * calculate whole line and update interactively while move sliders. properly detect period and improve sliders to fit periods
 

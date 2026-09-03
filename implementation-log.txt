@@ -376,6 +376,44 @@ REWRITES 0.6 (the plane-sweep / global spin model was rejected by the user).
   nested-frame kinematics (speed2=0 reproduces 2D in (x,z), y=0; tilt lifts
   y; two-axis bake closure gap; stride 5/6 switch + persistence).
 
+## done (0.7.1) - 3D trails match the spheres in both render modes
+- render modes reviewed and unified in renderScene (2D + 3D share one
+  dispatcher): overlay ON = "keep" (cached FBO baked once per view, only the
+  points pushed since the last bake are appended, blit + live guides on
+  top); overlay OFF = "redraw" (whole ring redrawn every render); gestures
+  draw directly (decimated over budget) and settle into one re-bake.
+- 3D trail defects fixed (all three produced "trail not at the spheres"):
+  - pushIdentity was not an identity: the 2D loops negate y (`cy0 - y*S`),
+    so projected screen pixels were mirrored to negative y. new `App.Sy`
+    (= -S in 2D, +1 under the 3D identity) used by both draw loops.
+  - projectRing wrote by ring SLOT while the loop read via a wrapped head;
+    slots past the wrap were stale after an incremental append. it now fills
+    a linear buffer (head 0) and returns the count.
+  - the 3D incremental bake skipped every append once the ring was full.
+    gear.drawn / drawnNewestRing replaced by `pushed` (monotonic, bumped in
+    pushPoint) + `baked`; unbakedStart(g) derives the chunk for 2D and 3D.
+- keep == redraw pixel parity: incremental bakes no longer stamp an end cap
+  per chunk (drawGearSegments noCap) - the tip is drawn live by
+  drawTrailTips; a mid-ring chunk preloads the previous segment direction so
+  join discs match a full draw.
+- cache invalidation: setAutoRotate(false) settles the camera (re-bake at
+  the final yaw); retargetCamera re-bakes only when the pivot moved;
+  GUI.openMenu re-targets only on a real re-selection (menu refresh kept
+  the pivot). renderScene also keys the bake on the view (dim, S, pan,
+  camera yaw/pitch/dist/target) and re-bakes on mismatch.
+- gears added while in 3D (applyLevel / addSubGear) get stride-6 rings; they
+  used to default to stride 5 and were skipped by every 3D draw.
+- test/stub-dom.js: monotonic frame clock (two ticks in one wall-clock ms
+  gave dt 0); R.seg tap installed before main.js hoists it (segTrace /
+  segLog). test/run.js: 186 checks (+21): 3D trail pixels == projection in
+  both modes on a wrapped ring, append ends at the projected pen, rebake
+  after orbit, auto-rotate / pivot invalidation, view-key re-bake, stride of
+  added gears, 2D append on a wrapped ring + burst.
+- verified in headless chromium (swiftshader WebGL2): before = no trail /
+  trail frozen away from the spheres; after = trail ends at the pen in both
+  modes, keep vs redraw of a wrapped ring differ in 0 canvas pixels, 2D
+  whole-mode renders are byte-identical to the previous build.
+
 ## done (0.6.0) - (REJECTED) 3D mode (polar two-speed + orbit camera)
 > superseded by 0.7.0 - the rotating-plane/global-spin model swept the flat
 > figure into a surface of revolution rather than giving each gear two axes.

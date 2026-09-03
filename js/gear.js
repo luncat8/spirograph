@@ -82,7 +82,10 @@
 			c3: [0, 0, 0], pen3: [0, 0, 0],
 			// trace ring. stride 5 = 2D (x y r g b); stride 6 = 3D (x y z r g b).
 			// main.js switches the stride on entering/leaving 3D and clears.
-			ring: null, stride: 5, cap: 0, head: 0, count: 0
+			// pushed = points pushed since the last clear (monotonic, survives
+			// eviction and realloc); baked = `pushed` as of the last overlay
+			// bake, so the bake knows how many NEW points to paint.
+			ring: null, stride: 5, cap: 0, head: 0, count: 0, pushed: 0, baked: 0
 		};
 	}
 
@@ -112,8 +115,8 @@
 		gear.cap = 0;
 		gear.head = 0;
 		gear.count = 0;
-		gear.drawn = 0;
-		gear.drawnNewestRing = undefined;
+		gear.pushed = 0;
+		gear.baked = 0;
 		gear.cx = 0; gear.cy = 0; gear.penx = 0; gear.peny = 0;
 		// 3D pose
 		gear.f3 = [1,0,0, 0,1,0, 0,0,1];
@@ -157,8 +160,7 @@
 		gear.cap = cap;
 		gear.head = 0;
 		gear.count = n;
-		if (gear.drawn > n) gear.drawn = n;
-		gear.drawnNewestRing = undefined;              // ring indices moved
+		// pushed/baked are counts, not slots: they survive the move untouched.
 	}
 
 	// grow the ring so it can hold at least `need` points. rings start
@@ -192,14 +194,13 @@
 		gear.trailCap = clamp(gear.trailCap, 100, CAP);
 		if (!gear.ring || gear.cap <= gear.trailCap) return;
 		reallocRing(gear, gear.trailCap, gear.stride);
-		gear.drawn = 0;
 	}
 
 	function clearTrace(gear) {
 		gear.head = 0;
 		gear.count = 0;
-		gear.drawn = 0;
-		gear.drawnNewestRing = undefined;
+		gear.pushed = 0;
+		gear.baked = 0;
 	}
 
 	function clearAllTraces(gear) {
@@ -234,6 +235,7 @@
 		gear.ring[o] = x; gear.ring[o + 1] = y;
 		if (st === 6) gear.ring[o + 2] = z;
 		gear.ring[o + st - 3] = col[0]; gear.ring[o + st - 2] = col[1]; gear.ring[o + st - 1] = col[2];
+		gear.pushed++;
 	}
 
 	// call cb(x0,y0[,z0],r0,g0,b0, x1,y1[,z1],r1,g1,b1) per consecutive segment

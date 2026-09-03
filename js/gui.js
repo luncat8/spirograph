@@ -359,8 +359,13 @@
 	}
 
 	function openMenu(gear, clientX, clientY) {
+		// the orbit pivot follows the SELECTED gear, set once at selection.
+		// a refresh of the open menu (mode switch, whole-mode slider swap)
+		// is not a new selection: re-targeting would jump the camera to the
+		// gear's current position and force a needless overlay re-bake.
+		var reselect = currentGear !== gear;
 		currentGear = gear;
-		if (app.dim === '3d' && app.setOrbitGear) app.setOrbitGear(gear);
+		if (reselect && app.dim === '3d' && app.setOrbitGear) app.setOrbitGear(gear);
 		menu.innerHTML = '';
 		var whole = app.mode === 'whole';
 		var title = el('div', 'ptitle drag');
