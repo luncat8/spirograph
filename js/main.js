@@ -46,7 +46,10 @@
 		showDial: false,
 		showPoints: false,
 		glowPoints: false,
-		drawTrails: false
+		drawTrails: false,
+		spheres: false,
+		sphereColor: '#9fd8ff',
+		sphereTrans: 0.25
 	};
 
 	var TAU = Math.PI * 2;
@@ -530,6 +533,17 @@
 	App.setShowDial = function (v) { App.showDial = v; markDirty(); };
 	App.setShowPoints = function (v) { App.showPoints = v; markDirty(); };
 	App.setGlow = function (v) { App.glowPoints = v; markDirty(); };
+	// glass sphere shells (view-only; drawn live each render, no overlay bake).
+	App.setSpheres = function (v) { App.spheres = !!v; markDirty(); };
+	App.setSphereColor = function (v) {
+		if (typeof v !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(v)) return;
+		App.sphereColor = v.toLowerCase(); markDirty();
+	};
+	App.setSphereTrans = function (v) {
+		v = Math.max(0, Math.min(1, +v));
+		if (!isFinite(v) || v === App.sphereTrans) return;
+		App.sphereTrans = v; markDirty();
+	};
 
 	// mode-appropriate default for the GLOBAL color mode. 'frequency' (hue/sec)
 	// is the natural reading in animate mode (continuous color flow at a rate);
@@ -1751,6 +1765,105 @@
 		}
 	}
 
+	// ---- glass sphere pass (shared by 2D and 3D) ----------------------------
+	// every gear is drawn as a ray-shaded glass shell impostor (see render.js).
+	// occlusion is painter + blend: spheres are sorted far -> near each render
+	// (3D: camera depth; 2D: radius, so parents paint under the children
+	// mounted inside them) and shaded in two passes - far shell before the
+	// trail layer, near shell after it - so trails and child spheres inside a
+	// parent read through its glass. a sphere's trail strand crossing depth
+	// layers is not depth-tested (the trail vertex stream has no z), which is
+	// fine for glass: "in front" vs "inside" differ only by one wall's tint.
+	var SPH_WALL = 0.16;                    // relative glass wall thickness
+	var sphKeys = new Float32Array(MAX_GEARS);   // sort keys (far -> near desc)
+	var sphCx = new Float32Array(MAX_GEARS);
+	var sphCy = new Float32Array(MAX_GEARS);
+	var sphRad = new Float32Array(MAX_GEARS);
+	var sphOrder = [];                      // permutation over the sorted keys
+	var sphValid = 0;                        // spheres batched this render
+	var sphEye = [0, 0, 0];
+	var sphBasis = { right: new Float32Array(3), up: new Float32Array(3), out: new Float32Array(3) };
+	var sphTint = new Float32Array([0.62, 0.85, 1.0]);
+	var sphTintParsed = '';
+	var sphUniforms = { right: sphBasis.right, up: sphBasis.up, out: sphBasis.out, tint: sphTint, opac: 0, wall: SPH_WALL, pass: 0 };
+
+	function sphCmp(a, b) { return sphKeys[b] - sphKeys[a]; }
+
+	function parseSphTint() {
+		if (App.sphereColor === sphTintParsed) return;
+		sphTintParsed = App.sphereColor;
+		sphTint[0] = parseInt(sphTintParsed.substr(1, 2), 16) / 255;
+		sphTint[1] = parseInt(sphTintParsed.substr(3, 2), 16) / 255;
+		sphTint[2] = parseInt(sphTintParsed.substr(5, 2), 16) / 255;
+	}
+
+	function collectSpheres(is3) {
+		R.sphReset();
+		sphValid = 0;
+		parseSphTint();
+		var bx = sphBasis.right, by = sphBasis.up, bo = sphBasis.out;
+		var n = Math.min(App.allGears.length, MAX_GEARS);
+		var i, g, rp;
+		if (is3) {
+			var eye = Camera3.eyeOf(App.cam, sphEye);
+			var t = App.cam.target;
+			var fx = t[0] - eye[0], fy = t[1] - eye[1], fz = t[2] - eye[2];
+			var fl = Math.hypot(fx, fy, fz) || 1; fx /= fl; fy /= fl; fz /= fl;
+			// camera basis in world (same construction as mat4LookAt):
+			// right = normalize(f x worldUp), up = right x f, out = -f.
+			var rx = fy, ry = -fx, rr = Math.hypot(rx, ry) || 1; rx /= rr; ry /= rr;
+			var ux = ry * fz, uy = -rx * fz, uz = rx * fy - ry * fx;
+			bx[0] = rx; bx[1] = ry; bx[2] = 0;
+			by[0] = ux; by[1] = uy; by[2] = uz;
+			bo[0] = -fx; bo[1] = -fy; bo[2] = -fz;
+			for (i = 0; i < n; i++) {
+				g = App.allGears[i];
+				sphOrder[i] = i;
+				var c = w2s3DC(g.c3[0], g.c3[1], g.c3[2]);
+				var rim = w2s3D(g.c3[0] + rx * g.r, g.c3[1] + ry * g.r, g.c3[2]);
+				rp = Math.hypot(rim.x - c.x, rim.y - c.y);
+				sphCx[i] = c.x; sphCy[i] = c.y; sphRad[i] = rp;
+				sphKeys[i] = rp >= 0.75 ? (fx * (g.c3[0] - eye[0]) + fy * (g.c3[1] - eye[1]) + fz * (g.c3[2] - eye[2])) : -1e30;
+			}
+		} else {
+			// 2D: the flat figure sits in the virtual XZ plane; view it from a
+			// slightly raised angle so the glass highlights sit naturally.
+			bx[0] = 1; bx[1] = 0; bx[2] = 0;
+			by[0] = 0; by[1] = 0; by[2] = 1;
+			var oi = 1 / Math.hypot(1.35, 0.45);
+			bo[0] = 0; bo[1] = -1.35 * oi; bo[2] = 0.45 * oi;
+			var panX = App.view.pan[0], panY = App.view.pan[1];
+			var S = App.S, cx0 = App.cx0, cy0 = App.cy0;
+			for (i = 0; i < n; i++) {
+				g = App.allGears[i];
+				sphOrder[i] = i;
+				rp = g.r * S;
+				sphCx[i] = cx0 + (g.cx + panX) * S;
+				sphCy[i] = cy0 - (g.cy + panY) * S;
+				sphRad[i] = rp;
+				sphKeys[i] = rp >= 0.75 ? g.r : -1e30;
+			}
+		}
+		sphOrder.length = n;
+		sphOrder.sort(sphCmp);
+		for (i = 0; i < n; i++) {
+			var gi = sphOrder[i];
+			if (sphKeys[gi] <= -1e29) break;   // sub-pixel spheres stay 2D outlines
+			R.sphPush(sphCx[gi], sphCy[gi], sphRad[gi]);
+			sphValid++;
+		}
+	}
+
+	// one shell pass: re-grabs the scene texture (the caller draws the trail
+	// layer between the far and near passes, so the near shell refracts it).
+	function drawSpherePass(pass) {
+		if (!App.spheres || !sphValid) return;
+		R.sphGrab();
+		sphUniforms.opac = 1 - App.sphereTrans;
+		sphUniforms.pass = pass;
+		R.sphDraw(sphUniforms);
+	}
+
 	// ---- render modes (shared by 2D and 3D) --------------------------------
 	// two ways to put the trail on screen:
 	//   overlay ON  ("keep"): the trail is baked into a cached FBO once per
@@ -1887,14 +2000,20 @@
 			// do not chase the moving gear here or the baked trail desyncs.
 			Camera3.viewProj(matM, App.cam, App.size * App.dpr, App.size * App.dpr);
 		}
+		var sphereOn = App.spheres;
+		if (sphereOn) collectSpheres(is3);
 		if (!App.drawTrails) {                 // trail hidden: skeleton + points only
 			R.begin(BG);
+			drawSpherePass(0);
+			drawSpherePass(1);
 			drawGuides(is3);
 			return;
 		}
 		if (isGestureActive()) {               // gesture: direct draw at the live view
 			R.begin(BG);
+			drawSpherePass(0);
 			drawTrailsDirect(is3, is3 ? GESTURE_SEG_BUDGET_3D : GESTURE_SEG_BUDGET);
+			drawSpherePass(1);
 			drawGuides(is3);
 			return;
 		}
@@ -1911,13 +2030,18 @@
 			}
 			R.overlay.unbind();
 			R.begin(BG);
+			drawSpherePass(0);
 			R.overlay.blitToScreen();
 			drawTrailTips(is3);
+			if (sphereOn) Rflush();            // tips must be pixels before the grab
+			drawSpherePass(1);
 			drawGuides(is3);
 			return;
 		}
 		R.begin(BG);                           // redraw mode: full trail every render
+		drawSpherePass(0);
 		drawTrailsDirect(is3, 0);
+		drawSpherePass(1);
 		drawGuides(is3);
 	}
 

@@ -1,5 +1,23 @@
 # CHANGELOG
 
+## 0.7.2 - glass spheres view option
+- new "spheres" section in the sidebar view options: **glass spheres** checkbox,
+  **sphere tint** color picker, **translucency** slider. persisted in the app
+  bag like every other toggle (save/load/reset covered).
+- every gear disc renders as a ray-shaded glass shell (one instanced impostor
+  quad per gear - analytic, no geometry, no raymarching): Fresnel reflections
+  off a small studio environment, Beer-Lambert absorption through the shell
+  wall (the long silhouette path reads as visible glass thickness), total
+  internal reflection at the rim (the mirror ring of real glass balls), and
+  refraction of the scene behind, sampled from a framebuffer copy bent along
+  the traced ray (capped to a few px so hairline trails don't moire).
+- z handling: spheres sort far -> near (camera depth in 3D, radius in 2D so
+  parents paint under the children mounted inside them) and draw in two
+  passes - far wall, then the trail layer, then near wall - so trails and
+  child spheres nested inside a parent show through its glass properly.
+- translucency scales reflections/absorption instead of alpha-blending toward
+  the framebuffer (the blend double-imaged sharp trails).
+
 ## 0.7.1 - 3D trails match the spheres; render modes unified
 - **3D trail fix (for real).** three independent defects put the baked 3D
   trail somewhere other than the spheres: the "identity" transform installed

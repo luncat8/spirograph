@@ -22,6 +22,7 @@
 	// saved "app" state is loaded (or when the reset button restores defaults).
 	var checkboxRefs = {};
 	var sliderRefs = {};   // dit for range inputs
+	var colorRefs = {};    // dit for color inputs (sphere tint etc.)
 	// reference into the open per-gear menu so refreshAnimMode() can relabel the
 	// anim-speed slider prefix after the global color mode changes.
 	var speedLabRefresh = null;
@@ -100,7 +101,7 @@
 		return wrap;
 	}
 
-	function colorRow(label, value, onChange) {
+	function colorRow(label, value, onChange, key) {
 		var wrap = el('div', 'row');
 		var lab = el('label', null, label);
 		var inp = document.createElement('input');
@@ -109,6 +110,7 @@
 		inp.addEventListener('input', function () { onChange(inp.value); });
 		wrap.appendChild(lab);
 		wrap.appendChild(inp);
+		if (key) colorRefs[key] = inp;
 		return wrap;
 	}
 
@@ -146,6 +148,7 @@
 		panel.innerHTML = '';
 		checkboxRefs = {};
 		sliderRefs = {};
+		colorRefs = {};
 		var title = el('div', 'ptitle', 'Spirograph');
 		panel.appendChild(title);
 
@@ -248,6 +251,16 @@
 		panel.appendChild(checkboxRow('glow points', app.glowPoints, function (v) { app.setGlow(v); }, 'glowPoints'));
 		panel.appendChild(el('div', 'help',
 			'Uncheck "draw trail" to hide the traced curve (points-only view).'));
+
+		// glass sphere shells over the gear discs (fake ray-shaded impostors;
+		// drawn in 2D and 3D alike, sorted far -> near into two shell passes).
+		panel.appendChild(el('div', 'sub', 'spheres'));
+		panel.appendChild(checkboxRow('glass spheres', app.spheres, function (v) { app.setSpheres(v); }, 'spheres'));
+		panel.appendChild(colorRow('sphere tint', app.sphereColor, function (v) { app.setSphereColor(v); }, 'sphereColor'));
+		panel.appendChild(sliderRow('translucency', 0, 1, 0.01, app.sphereTrans, function (v) { app.setSphereTrans(v); }, null, 'sphereTrans'));
+		panel.appendChild(el('div', 'help',
+			'Ray-shaded glass shells on every gear. tint colors the glass; ' +
+			'translucency fades the shells (1 = invisible).'));
 
 		// gear tree: level sliders grow every parent at a depth by the same
 		// child count, radially spaced; symmetry mirrors menu edits per level.
@@ -531,6 +544,12 @@
 		setShowPoints: function (v) { if (checkboxRefs.showPoints) checkboxRefs.showPoints.checked = v; },
 		setGlow: function (v) { if (checkboxRefs.glowPoints) checkboxRefs.glowPoints.checked = v; },
 		setDrawTrails: function (v) { if (checkboxRefs.drawTrails) checkboxRefs.drawTrails.checked = v; },
+		setSpheres: function (v) { if (checkboxRefs.spheres) checkboxRefs.spheres.checked = v; },
+		setSphereColor: function (v) { if (colorRefs.sphereColor) colorRefs.sphereColor.value = v; },
+		setSphereTrans: function (v) {
+			var r = sliderRefs.sphereTrans; if (!r) return;
+			r.input.value = v; r.val.textContent = fmt(v);
+		},
 		setGlobalSpeed: function (v) {
 			var r = sliderRefs.globalSpeed; if (!r) return;
 			r.input.value = v; r.val.textContent = fmt(v);

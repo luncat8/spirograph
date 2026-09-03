@@ -214,3 +214,18 @@
   hook). true 3D occlusion between trail strands needs the projected depth
   carried through projScratch into the vertex stream - a separate feature,
   not part of the 3D-trail-position fix; do not document it as existing.
+- `copyTexSubImage2D` from an `alpha: false` canvas backbuffer needs an
+  RGB-class destination texture (`texImage2D(..., gl.RGB8, ..., gl.RGB, ...)`);
+  copying into RGBA8 throws GL_INVALID_OPERATION "Invalid copy texture format
+  combination" (ANGLE at least). when a framebuffer copy is sampled with
+  `gl_FragCoord.xy / uRes` there is no y-flip.
+- a shader that already samples the "behind the glass" scene texture must
+  composite with `alpha = 1` (full replace of dst inside the silhouette), not
+  blend src toward the existing dst: anything sharp in dst (1 px trails) then
+  coexists with its bent sample and double-images - reads as moire speckle.
+  relatedly, cap the refracted sample offset in PIXELS (a few px, not sphere
+  radii) or the bent read beats against the strand spacing the same way.
+- translucency sliders on such shells should scale the shell's own
+  contributions (Fresnel reflection strength, absorption) and lerp the
+  transmission toward straight-through - not fade the final alpha, which
+  reintroduces the double image above.

@@ -148,6 +148,31 @@
 				GUI.setDrawTrails(s.drawTrails);
 				A.markDirty();
 			}
+		},
+		// glass sphere shells over the gear discs (view-only option; spheres
+		// draw live every frame, so no overlay re-bake is needed).
+		{
+			key: 'spheres', def: false, persist: true,
+			get: function (A) { return A.spheres; },
+			clean: function (v) { return boolOff(v); },
+			apply: function (s, A, GUI) { A.spheres = s.spheres; GUI.setSpheres(s.spheres); A.markDirty(); }
+		},
+		{
+			key: 'sphereColor', def: '#9fd8ff', persist: true,
+			get: function (A) { return A.sphereColor; },
+			clean: function (v) {
+				return (typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v)) ? v.toLowerCase() : undefined;
+			},
+			apply: function (s, A, GUI) { A.sphereColor = s.sphereColor; GUI.setSphereColor(s.sphereColor); A.markDirty(); }
+		},
+		{
+			key: 'sphereTrans', def: 0.25, persist: true,
+			get: function (A) { return A.sphereTrans; },
+			clean: function (v) {
+				if (typeof v !== 'number' || !isFinite(v)) return undefined;
+				return Math.max(0, Math.min(1, v));
+			},
+			apply: function (s, A, GUI) { A.sphereTrans = s.sphereTrans; GUI.setSphereTrans(s.sphereTrans); A.markDirty(); }
 		}
 	];
 

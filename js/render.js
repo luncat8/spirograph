@@ -121,6 +121,262 @@
 		gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 	}
 
+	// ---- glass sphere impostor pass --------------------------------------
+	// one instanced quad per gear sphere; the fragment shader ray-shades a
+	// hollow glass shell analytically (no geometry, no raymarching):
+	//   outer/inner x front/back interfaces, Fresnel reflections off an
+	//   analytic studio environment, Beer-Lambert absorption through the wall
+	//   (longer path at the silhouette = visible glass thickness), total
+	//   internal reflection at the rim, and a refracted sample of a texture
+	//   copy of whatever was already drawn (sphGrab). drawn in two passes -
+	//   far shell before the trail layer, near shell after it - so trails and
+	//   child spheres sitting INSIDE a parent sphere read through its glass.
+	var SPH_CAP = 512;                       // gear ceiling is 400 (MAX_GEARS)
+	var sphProg = null, sphVao = null, sphQuadVbo = null, sphInstVbo = null;
+	var sphTex = null;
+	var sphLoc = {};
+	var sphScratch = new Float32Array(SPH_CAP * 3);   // cx, cy, rad (top-left px)
+	var sphCount = 0;
+
+	var SPH_VS = [
+		'#version 300 es',
+		'precision highp float;',
+		'in vec2 aQ;',        // unit quad corner (+-1)
+		'in vec2 aC;',        // sphere centre, buffer px (top-left origin)
+		'in float aR;',       // radius, buffer px
+		'uniform vec2 uRes;',
+		'out vec2 vQ;',
+		'flat out float vR;',
+		'void main(){',
+		'  float pad = 1.0 + 1.5 / max(aR, 1.0);',
+		'  vQ = aQ * pad;',
+		'  vR = aR;',
+		'  vec2 p = aC + vQ * aR;',
+		'  vec2 clip = vec2(p.x / uRes.x * 2.0 - 1.0, 1.0 - p.y / uRes.y * 2.0);',
+		'  gl_Position = vec4(clip, 0.0, 1.0);',
+		'}'
+	].join('\n');
+
+	var SPH_FS = [
+		'#version 300 es',
+		'precision highp float;',
+		'in vec2 vQ;',
+		'flat in float vR;',
+		'uniform vec2 uRes;',
+		'uniform sampler2D uTex;',
+		'uniform vec3 uRight;',  // camera basis, world space (right, up, out-to-eye)
+		'uniform vec3 uUp;',
+		'uniform vec3 uOut;',
+		'uniform vec3 uTint;',
+		'uniform float uOpac;',  // glass amount (1 - translucency): scales reflections + absorption
+		'uniform float uWall;',  // relative wall thickness (R_outer - R_inner) / R
+		'uniform float uPass;',  // 0 = far shell, 1 = near shell
+		'out vec4 outColor;',
+		'',
+		'const float ETA = 1.45;',   // glass IOR
+		'const float F0 = 0.0337;',  // ((1-ETA)/(1+ETA))^2
+		'const float ABSORB = 2.4;',
+		'',
+		'float schlick(float c){',
+		'  c = clamp(c, 0.0, 1.0);',
+		'  float x = 1.0 - c; float x2 = x * x;',
+		'  return F0 + (1.0 - F0) * x2 * x2 * x;',
+		'}',
+		'vec3 toWorld(vec3 n){ return normalize(n.x * uRight + n.y * uUp + n.z * uOut); }',
+		'vec3 envLight(vec3 d3){',
+		'  float h = clamp(d3.z * 0.5 + 0.5, 0.0, 1.0);',
+		'  vec3 col = mix(vec3(0.045, 0.055, 0.085), vec3(0.60, 0.67, 0.80), h);',
+		'  vec3 l1 = normalize(vec3(0.55, -0.55, 0.65));',
+		'  vec3 l2 = normalize(vec3(-0.50, 0.25, 0.80));',
+		'  vec3 l3 = normalize(vec3(0.15, 0.85, 0.30));',
+		'  vec3 l4 = normalize(vec3(-0.35, -0.55, -0.55));',
+		'  col += vec3(1.00, 0.92, 0.75) * pow(max(dot(d3, l1), 0.0), 300.0) * 10.0;', // key dot
+		'  col += vec3(1.00, 0.95, 0.85) * pow(max(dot(d3, l1), 0.0), 36.0) * 1.35;', // key softbox window
+		'  col += vec3(0.42, 0.58, 0.98) * pow(max(dot(d3, l2), 0.0), 26.0) * 0.70;', // cool fill
+		'  col += vec3(0.60, 0.62, 0.65) * pow(max(dot(d3, l3), 0.0), 60.0) * 1.0;',  // overhead bounce
+		'  col += vec3(0.30, 0.33, 0.38) * pow(max(dot(d3, l4), 0.0), 40.0) * 0.55;', // under-rim bounce
+		'  col += vec3(0.24, 0.30, 0.42) * exp(-abs(d3.z - 0.06) * 4.0);',            // bubble sheen at the rim
+		'  return col;',
+		'}',
+		'void main(){',
+		'  float d = length(vQ);',
+		'  float aa = clamp((1.0 - d) * vR / 1.5 * 0.5 + 0.5, 0.0, 1.0);',
+		'  if (aa <= 0.002) discard;',
+		'  float dcl = min(d, 1.0);',
+		'  float dc2 = dcl * dcl;',
+		'  float z1 = sqrt(1.0 - dc2);',              // outer sphere |z|
+		'  float w = uWall;',
+		'  float ri = 1.0 - w;',                       // inner void radius
+		'  bool gap = dcl < ri;',                      // ray crosses the air void
+		'  float zin = 0.0;',
+		'  if (gap) zin = sqrt(ri * ri - dc2);',
+		'  vec2 dirQ = d > 1e-4 ? vQ / d : vec2(0.0);',// outward radial dir (y down)
+		'  // air->glass bend at the outer surface (exact radial 2D trace):',
+		'  float cT1 = sqrt(max(1.0 - dc2 / (ETA * ETA), 0.0));',
+		'  float sB = dcl * cT1 - z1 * dcl / ETA;',    // sin(bend toward axis)
+		'  float cB = z1 * cT1 + dc2 / ETA;',          // cos(bend)
+		'  vec3 rd = -uOut;',
+		'  float trans = 1.0;',
+		'  float beerL = 0.0;',                        // glass path / wall thickness
+		'  float shift = 0.0;',                        // bg sample shift, R units
+		'  vec3 refl = vec3(0.0);',
+		'  if (uPass > 0.5) {',
+		'    // NEAR shell: front outer wall + front inner wall of the void',
+		'    float f1 = schlick(z1);',
+		'    refl = f1 * envLight(reflect(rd, toWorld(vec3(vQ.x, -vQ.y, z1))));',
+		'    if (gap) {',
+		'      vec2 p0 = vec2(dcl, z1);',
+		'      vec2 d1 = vec2(-sB, -cB);',
+		'      float pd = dcl * sB + z1 * cB;',
+		'      float tc = pd - sqrt(max(pd * pd + ri * ri - 1.0, 0.0));',
+		'      vec2 p1 = p0 + tc * d1;',
+		'      vec2 n1 = p1 / ri;',
+		'      float ci = clamp(-(d1.x * n1.x + d1.y * n1.y), 0.0, 1.0);',
+		'      float st2 = ETA * ETA * max(1.0 - ci * ci, 0.0);',
+		'      float f2 = 1.0;',
+		'      vec2 d2 = d1;',
+		'      if (st2 < 1.0) {',
+		'        float ct = sqrt(1.0 - st2);',
+		'        d2 = ETA * d1 + (ETA * ci - ct) * n1;',
+		'        f2 = schlick((ci + ct) * 0.5);',
+		'        float tt = -p1.y / min(d2.y, -1e-4);',
+		'        shift = p1.x + d2.x * tt - dcl;',
+		'      } else { shift = -0.5; }',
+		'      trans = (1.0 - f1) * (1.0 - f2);',
+		'      beerL = tc / w;',
+		'      vec3 n2s = vec3(dirQ.x * n1.x, -dirQ.y * n1.x, n1.y);',
+		'      refl += (1.0 - f1) * f2 * envLight(reflect(rd, toWorld(n2s)));',
+		'    } else {',
+		'      trans = 1.0 - f1;',
+		'      beerL = z1 / w;',
+		'      shift = -(sB / max(cB, 0.15)) * z1;',
+		'    }',
+		'  } else {',
+		'    // FAR shell: back inner wall + back outer wall',
+		'    float st = ETA * ETA * dc2;',
+		'    bool noTir = st < 1.0;',
+		'    float ct = noTir ? sqrt(1.0 - st) : 0.0;',
+		'    float f4 = noTir ? schlick((z1 + ct) * 0.5) : 1.0;',
+		'    if (gap) {',
+		'      float f3 = schlick(zin / ri);',
+		'      trans = (1.0 - f3) * (1.0 - f4);',
+		'      beerL = (z1 - zin) / w;',
+		'      vec3 n3s = vec3(dirQ.x * dcl, -dirQ.y * dcl, -zin) / ri;',
+		'      refl = f3 * envLight(reflect(rd, toWorld(n3s))) +',
+		'        (1.0 - f3) * f4 * envLight(reflect(rd, toWorld(vec3(vQ.x, -vQ.y, -z1))));',
+		'      shift = -2.0 * (z1 - zin) * sB;',
+		'    } else {',
+		'      trans = 1.0 - f4;',
+		'      beerL = z1 / w;',
+		'      refl = f4 * envLight(reflect(rd, toWorld(vec3(vQ.x, -vQ.y, -z1))));',
+		'      shift = -(sB / max(cB, 0.15)) * z1;',
+		'    }',
+		'  }',
+		// keep refraction under a few px: dense hairline trails moire badly
+		// when the lensed sample jumps across strands (it reads as speckle).
+		'  float shiftCap = min(0.5, 3.0 / vR);',
+		'  shift = clamp(shift, -shiftCap, shiftCap);',
+		'  trans = mix(1.0, trans, uOpac);',     // translucency 1 = clear passthrough
+		'  vec3 beer = exp(-(1.0 - uTint) * (ABSORB * uOpac) * beerL);',
+		'  vec2 fc = gl_FragCoord.xy;',
+		'  vec2 uvb = (fc + vec2(dirQ.x, -dirQ.y) * (shift * vR)) / uRes;',
+		'  vec3 behind = texture(uTex, uvb).rgb;',
+		// full replacement (alpha = aa), not a blend-toward-dst ghost: the
+		// refracted texture sample already carries what lies behind, so the
+		// trail never double-images against a straight-through copy.
+		'  outColor = vec4(aa * (uOpac * refl + trans * beer * behind), aa);',
+		'}'
+	].join('\n');
+
+	function sphInit() {
+		sphProg = gl.createProgram();
+		gl.attachShader(sphProg, compile(gl.VERTEX_SHADER, SPH_VS));
+		gl.attachShader(sphProg, compile(gl.FRAGMENT_SHADER, SPH_FS));
+		gl.linkProgram(sphProg);
+		if (!gl.getProgramParameter(sphProg, gl.LINK_STATUS)) {
+			throw new Error('sphere link: ' + gl.getProgramInfoLog(sphProg));
+		}
+		var names = ['uRes', 'uTex', 'uRight', 'uUp', 'uOut', 'uTint', 'uOpac', 'uWall', 'uPass'];
+		for (var i = 0; i < names.length; i++) sphLoc[names[i]] = gl.getUniformLocation(sphProg, names[i]);
+		// scene-copy texture (refraction / transmission background)
+		sphTex = gl.createTexture();
+		gl.bindTexture(gl.TEXTURE_2D, sphTex);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+		sphResize(1, 1);
+		sphVao = gl.createVertexArray();
+		gl.bindVertexArray(sphVao);
+		sphQuadVbo = gl.createBuffer();
+		gl.bindBuffer(gl.ARRAY_BUFFER, sphQuadVbo);
+		gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+		var qLoc = gl.getAttribLocation(sphProg, 'aQ');
+		gl.enableVertexAttribArray(qLoc);
+		gl.vertexAttribPointer(qLoc, 2, gl.FLOAT, false, 8, 0);
+		sphInstVbo = gl.createBuffer();
+		gl.bindBuffer(gl.ARRAY_BUFFER, sphInstVbo);
+		gl.bufferData(gl.ARRAY_BUFFER, sphScratch.byteLength, gl.DYNAMIC_DRAW);
+		var cLoc = gl.getAttribLocation(sphProg, 'aC');
+		gl.enableVertexAttribArray(cLoc);
+		gl.vertexAttribPointer(cLoc, 2, gl.FLOAT, false, 12, 0);
+		gl.vertexAttribDivisor(cLoc, 1);
+		var rLoc = gl.getAttribLocation(sphProg, 'aR');
+		gl.enableVertexAttribArray(rLoc);
+		gl.vertexAttribPointer(rLoc, 1, gl.FLOAT, false, 12, 8);
+		gl.vertexAttribDivisor(rLoc, 1);
+		gl.bindVertexArray(null);
+	}
+
+	function sphResize(w, h) {
+		gl.bindTexture(gl.TEXTURE_2D, sphTex);
+		// RGB8: the canvas context is created with alpha:false, so the back
+		// buffer is RGB and only an RGB-class destination accepts the copy
+		// (RGBA8 trips "Invalid copy texture format combination" on ANGLE).
+		gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB8, w, h, 0, gl.RGB, gl.UNSIGNED_BYTE, null);
+	}
+
+	// copy the current default framebuffer into the scene texture. bottom-left
+	// origins match, so the shader samples it with gl_FragCoord.xy / uRes -
+	// no y flip needed.
+	function sphGrab() {
+		gl.bindTexture(gl.TEXTURE_2D, sphTex);
+		gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, W, H);
+	}
+
+	function sphReset() { sphCount = 0; }
+
+	function sphPush(cx, cy, rad) {
+		if (sphCount >= SPH_CAP) return;
+		var o = sphCount * 3;
+		sphScratch[o] = cx; sphScratch[o + 1] = cy; sphScratch[o + 2] = rad;
+		sphCount++;
+	}
+
+	// p: {right, up, out, tint (vec3 arrays), opac, wall, pass}
+	function sphDraw(p) {
+		if (sphCount === 0) return;
+		gl.disable(gl.DEPTH_TEST);
+		gl.depthMask(false);
+		gl.useProgram(sphProg);
+		gl.uniform2f(sphLoc.uRes, W, H);
+		gl.uniform3f(sphLoc.uRight, p.right[0], p.right[1], p.right[2]);
+		gl.uniform3f(sphLoc.uUp, p.up[0], p.up[1], p.up[2]);
+		gl.uniform3f(sphLoc.uOut, p.out[0], p.out[1], p.out[2]);
+		gl.uniform3f(sphLoc.uTint, p.tint[0], p.tint[1], p.tint[2]);
+		gl.uniform1f(sphLoc.uOpac, p.opac);
+		gl.uniform1f(sphLoc.uWall, p.wall);
+		gl.uniform1f(sphLoc.uPass, p.pass);
+		gl.activeTexture(gl.TEXTURE0);
+		gl.bindTexture(gl.TEXTURE_2D, sphTex);
+		gl.uniform1i(sphLoc.uTex, 0);
+		gl.bindVertexArray(sphVao);
+		gl.bindBuffer(gl.ARRAY_BUFFER, sphInstVbo);
+		gl.bufferSubData(gl.ARRAY_BUFFER, 0, sphScratch.subarray(0, sphCount * 3));
+		gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, sphCount);
+		gl.bindVertexArray(null);
+	}
+
 	var VS = [
 		'#version 300 es',
 		'precision highp float;',
@@ -218,6 +474,7 @@
 		gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 		overlayInit(W, H);
 		glowInit();
+		sphInit();
 	}
 
 	function resize(w, h) {
@@ -226,6 +483,7 @@
 		canvas.height = h;
 		gl.viewport(0, 0, w, h);
 		if (fbo) overlayResize(w, h);
+		if (sphTex) sphResize(w, h);
 	}
 
 	function begin(bg) {
@@ -441,6 +699,10 @@
 		glowBegin: glowBegin,
 		glowPoint: glowPoint,
 		glowFlush: glowFlush,
+		sphReset: sphReset,
+		sphPush: sphPush,
+		sphGrab: sphGrab,
+		sphDraw: sphDraw,
 		maxVert: MAXVERT,
 		vCount: function () { return vCount; }
 	};

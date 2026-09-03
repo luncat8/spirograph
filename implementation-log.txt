@@ -460,6 +460,26 @@ REWRITES 0.6 (the plane-sweep / global spin model was rejected by the user).
   controls, panel/menu 3D rows, 3D scene autosave round-trip). offline PNG
   raster of a baked 3D scene shows the clean surface-of-revolution loom.
 
+## done (0.7.2) - glass spheres view option
+- render.js: sphere impostor pass - instanced quads (aQ corner + aC centre +
+  aR radius), one analytic hollow-glass-shell shader (outer/inner x
+  front/back interfaces, Schlick Fresnel off a const environment, radial 2D
+  refraction trace for the sample shift, Beer-Lambert absorption scaled by
+  wall-relative path, TIR rim), AA'd silhouette. R.sphReset/sphPush/sphGrab/
+  sphDraw; sphGrab copies the default framebuffer into an RGB8 texture
+  re-created on resize (RGBA8 is rejected with alpha:false canvases).
+- main.js: sphere settings (spheres/sphereColor/sphereTrans placeholders +
+  setters), collectSpheres batches gears sorted far -> near (3D: camera view
+  depth + world-space camera basis for env normals; 2D: radius sort with a
+  fixed virtual camera), renderScene draws pass 0 (far walls) before the
+  trail layer and pass 1 (near walls) after it, each after a fresh sphGrab.
+- gui.js/settings.js: panel rows (toggle, tint color input, translucency
+  slider) + three APP_SCHEMA entries with clean/apply/GUI sync.
+- verified headless (puppeteer + swiftshader screenshots): nested spheres
+  read through parents, trails refract without double-imaging, both dims.
+- test/run.js: 203 assertions (sphere schema defaults/sanitize/clamp, panel
+  rows, 2D+3D frames with spheres on, autosave round-trip, reset path).
+
 ## next
 - optional polish (from the 0.6 plan's future-work list): real near-plane
   segment clipping (currently edge-clamped streaks when inside the figure),

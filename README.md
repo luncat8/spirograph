@@ -20,6 +20,14 @@ draw hypotrochoid / epitrochoid curves in the browser. no build step.
 	  global cycles/frequency color mode (auto per trace mode, user-overridable)
 	per-pencil trail length (how much of the animate trail stays on screen;
 	  rings grow lazily) + a separate whole-mode `detail` (points per turn)
+	glass spheres view option: every gear disc is dressed in a ray-shaded
+	  glass shell (analytic impostor quad, no geometry) - Fresnel studio
+	  reflections, Beer-Lambert tint through the wall (visible glass
+	  thickness), total-internal-reflection rim, refraction of the scene
+	  behind; tint color picker + translucency slider; spheres sort far ->
+	  near and draw in two passes (far wall, trails, near wall) so trails and
+	  child spheres nested inside a parent read through its glass, in 2D
+	  and 3D alike
 	whole-curve mode with tolerance-based period detection, background
 	  (time-sliced) baking with a progress readout, and sliders that only stop
 	  on period-friendly values; `max period` sets the search ceiling
