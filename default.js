@@ -1,8 +1,10 @@
 // spirograph default scene + preset list.
 // SETTINGS = the startup scene (loads when there is no autosave);
 // PRESETS = the panel's preset dropdown. regenerate with
-// presets_combine.py: it appends the scene files saved next to
-// index.html and renames the consumed files to *.delete-me.
+// presets_merge_to_default.js.py: it appends the scene files saved
+// next to index.html and renames the consumed files to *.delete-me
+// (link_presets_to_html.py is the multi-file alternative).
+
 (function (root) {
 	var S = {
 	"gears": [

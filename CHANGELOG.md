@@ -1,5 +1,34 @@
 # CHANGELOG
 
+## 0.7.6 - small symmetry saves, persistent auto-rotate, multi-file presets
+- **symmetry mode now saves small.** a scene saved with symmetry on stores
+  ONE gear per level (the level's template) plus a top-level `levels`
+  array of per-level child counts instead of the full rosette; the loader
+  re-expands it (clones + i*360/N re-spread) before the scene boots, so a
+  12x12x12 rosette saves as a 4-gear chain. turning symmetry ON commits
+  the live tree to uniform rosettes first (each level = clones of its
+  first gear), so what you see is exactly what the save stores; a remove
+  under symmetry shrinks the whole level, and old full-format symmetric
+  saves re-commit themselves on load. symmetry off saves the full tree
+  unchanged, and every old file loads as before.
+- **fix: the `auto-rotate camera` checkbox no longer forgets itself.** the
+  toggle is now persisted in the scene / autosave app bag next to its two
+  speed sliders, so a saved 3D scene resumes its camera motion on load
+  (and reset brings it back off, as the help text always implied).
+- **presets: two workflows, one dropdown.** `presets_combine.py` is
+  renamed `presets_merge_to_default.js.py` (single-file: merge the saved
+  scene files into `default.js`), and the new `link_presets_to_html.py`
+  is the multi-file half: it converts the scene files in the app dir into
+  preset modules (the scene is kept, the file appends one entry to
+  `window.PRESETS` and stamps a `// preset: NAME.js` marker) and inserts
+  a `<script ... class="preset">` tag per file between `default.js` and
+  `js/main.js`. the tags are managed: rename or delete a preset file and
+  re-run to move or drop its tag (the marker is the rename tracker); a
+  second run changes nothing. preset files never touch the startup
+  `SETTINGS`, opening one via `o` loads its scene, the dropdown dedupes
+  by name (last wins), and the merge script now leaves linked files
+  alone. the shipped `default.js` moves to LF and documents both scripts.
+
 ## 0.7.5 - presets + auto-camera speed sliders
 - **preset system.** the save button (d) now writes a descriptively named
   file - `3d-tails-whole-yy-mm-dd-hh-mm-ss.js` (dimension, trail drawn, whole

@@ -25,8 +25,8 @@
 		// floor is gear.js applyTrailCap's hard minimum; min is the slider's.
 		trailCap: { min: 100, max: 40000, step: 10, floor: 10 },
 		// 3D auto-camera speeds (rad/s). float: clamp keeps fractions; floor 0
-		// = the axis-off sentinel (the log sliders prepend it). the checkbox
-		// itself (autoRotate) is session-only, the speeds are preferences.
+		// = the axis-off sentinel (the log sliders prepend it). the toggle
+		// (autoRotate) and the speeds all persist in the app bag.
 		autoYaw: { min: 0.01, max: 3, def: 0.2, floor: 0, float: true },
 		autoPitch: { min: 0.01, max: 3, def: 0, floor: 0, float: true }
 	};
@@ -249,9 +249,19 @@
 			apply: function (s, A, GUI) { A.sphereParams = s.sphereParams; GUI.setSphereParams(s.sphereParams); A.markDirty(); }
 		},
 		{
+			// 3D auto-rotate toggle, persisted next to its two speeds. the
+			// recipe goes through App.setAutoRotate (not a bare field write):
+			// turning it ON at load time marks the view dirty for the first
+			// frame, and turning it OFF re-bakes the settled camera.
+			key: 'autoRotate', def: false, persist: true,
+			get: function (A) { return A.autoRotate; },
+			clean: function (v) { return boolOff(v); },
+			apply: function (s, A, GUI) { A.setAutoRotate(s.autoRotate); GUI.setAutoRotate(s.autoRotate); }
+		},
+		{
 			// 3D auto-camera speeds (rad/s, log sliders; 0 = that axis stays
 			// still). no apply recipe work beyond the field + GUI sync: camera
-			// motion is continuous while the (session-only) toggle is on.
+			// motion is continuous while the toggle is on.
 			key: 'autoYaw', def: LIMITS.autoYaw.def, persist: true,
 			get: function (A) { return A.autoYaw; },
 			clean: function (v) {

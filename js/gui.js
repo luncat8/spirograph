@@ -177,9 +177,10 @@
 	}
 
 	// preset dropdown: a placeholder option plus one option per preset
-	// (default.js's PRESETS list, filled by presets_combine.py). after a pick
-	// the selection falls back to the placeholder so the same preset can be
-	// chosen twice in a row.
+	// (window.PRESETS - default.js's list and the <script class="preset">
+	// tags managed by link_presets_to_html.py). after a pick the selection
+	// falls back to the placeholder so the same preset can be chosen twice
+	// in a row.
 	function presetRow(names, onPick) {
 		var wrap = el('div', 'row');
 		var lab = el('label', null, 'preset ');
@@ -217,7 +218,10 @@
 		for (var i = 0; i < presets.length; i++) names.push(presets[i].name);
 		presetHost.appendChild(presetRow(names, function (name) { app.loadPreset(name); }));
 		presetHost.appendChild(el('div', 'help',
-			'presets live in default.js: save scenes next to index.html, run presets_combine.py.'));
+			'two preset workflows (run from the app dir): merge saved scenes into ' +
+			'default.js with presets_merge_to_default.js.py, or keep them as separate ' +
+			'files - link_presets_to_html.py inserts them into index.html, and ' +
+			'renaming or deleting a file + re-running updates the list.'));
 	}
 
 	// slider rows of the selected glass shader (one per param in its table).
@@ -279,6 +283,22 @@
 		btns.appendChild(buttonRow('clear (c)', function () { app.clearTraces(); }));
 		btns.appendChild(buttonRow('reset (x)', function () { app.resetScene(); }));
 		panel.appendChild(btns);
+
+
+		var sval = el('div', 'sub', 'scene');
+		panel.appendChild(sval);
+		// preset dropdown (default.js's PRESETS) above the save/load buttons.
+		// the host is permanent so the row can be rebuilt in place when a
+		// combined default.js is opened and its preset list adopted.
+		presetHost = el('div', 'levels');
+		panel.appendChild(presetHost);
+		rebuildPresetRow();
+		var sbtns = el('div', 'btns');
+		sbtns.appendChild(buttonRow('copy (s)', function () { app.copyScene(); }));
+		sbtns.appendChild(buttonRow('save (d)', function () { app.downloadScene(); }));
+		sbtns.appendChild(buttonRow('open (o)', function () { app.loadFile(); }));
+		sbtns.appendChild(buttonRow('paste (p)', function () { app.loadClipboard(); }));
+		panel.appendChild(sbtns);
 
 		// dimension switch: 2D / 3D (g key). the 3D section below is shown only
 		// in 3D mode (setDim toggles it).
@@ -424,21 +444,6 @@
 		panel.appendChild(treeBtns);
 		panel.appendChild(el('div', 'help',
 			'lvl N = children per parent at that level, placed at i * 360/N. 0 removes the level.'));
-
-		var sval = el('div', 'sub', 'scene');
-		panel.appendChild(sval);
-		// preset dropdown (default.js's PRESETS) above the save/load buttons.
-		// the host is permanent so the row can be rebuilt in place when a
-		// combined default.js is opened and its preset list adopted.
-		presetHost = el('div', 'levels');
-		panel.appendChild(presetHost);
-		rebuildPresetRow();
-		var sbtns = el('div', 'btns');
-		sbtns.appendChild(buttonRow('copy (s)', function () { app.copyScene(); }));
-		sbtns.appendChild(buttonRow('save (d)', function () { app.downloadScene(); }));
-		sbtns.appendChild(buttonRow('open (o)', function () { app.loadFile(); }));
-		sbtns.appendChild(buttonRow('paste (p)', function () { app.loadClipboard(); }));
-		panel.appendChild(sbtns);
 
 		autosaveLabel = el('div', 'auto', 'autosave: on');
 		panel.appendChild(autosaveLabel);

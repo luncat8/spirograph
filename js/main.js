@@ -32,7 +32,7 @@
 		dim: '2d',
 		cam: null,
 		orbitGear: null,            // orbit pivot (menu gear, else nearest root)
-		autoRotate: false,          // session-only (not persisted)
+		autoRotate: false,          // 3D auto-rotate camera (persisted in the app bag)
 		// persisted settings (mode, toggles, bake options) are PLACEHOLDERS
 		// here: defaults, bounds, clamps and the load/save recipes all live in
 		// js/settings.js, and init() seeds the live values via
@@ -540,7 +540,7 @@
 	};
 
 	// auto-camera speeds (log sliders; 0 = that axis stays still). no render
-	// work here: they only matter while the (session-only) toggle spins the
+	// work here: they only matter while the auto-rotate toggle spins the
 	// camera, and that path requests a render every frame already.
 	App.setAutoYaw = function (v) {
 		var s = Settings.clamp('autoYaw', +v);
@@ -685,7 +685,8 @@
 		GUI.setColorMode(App.colorMode);
 		GUI.refreshAnimMode && GUI.refreshAnimMode();
 		// reset the dimension too: a clean slate starts in 2D with no camera.
-		App.dim = '2d'; App.cam = null; camEase = null; App.autoRotate = false; App.orbitGear = null;
+		// (autoRotate comes back off through the applyApp defaults above.)
+		App.dim = '2d'; App.cam = null; camEase = null; App.orbitGear = null;
 		Gear.setTreeStride(App.roots, false);
 		GUI.setDim && GUI.setDim('2d');
 		if (App.mode === 'whole') snapSceneForWhole();
@@ -740,17 +741,21 @@
 		if (template) child.rot2 = template.rot2 || 0;
 		// new sub-gear inherits the global color mode
 		child.pencil.animMode = App.colorMode;
-		// place the new gear so its live pose matches (2D planar update + a 3D
-		// pose if we are in 3D). 2D needs the carry phase; 3D inherits the
-		// parent's nested frame.
-		var anc = parent, carry = anc ? (anc.phase != null ? anc.phase : anc.rot) : 0;
-		Gear.update(child, parent, parent.cx, parent.cy, carry, 0, App.globalSpeed);
-		// 3D: the new sub-tree must store xyz (stride 6) like the rest of the
-		// tree - a fresh gear defaults to the 2D stride and its trail would
-		// be skipped by every 3D draw - and gets a full pose (a clone may
-		// carry its own children; pose3All uses the parent link wired above).
-		if (App.dim === '3d') { Gear.setTreeStride([child], true); Gear.pose3All(child, parent); }
+		placeGear(child, parent);
 		return child;
+	}
+
+	// put a freshly mounted gear at its current pose: the next animate tick
+	// would do it anyway, but a paused scene must not show a stale position.
+	// 2D needs the carry phase; 3D inherits the parent's nested frame. 3D
+	// additionally: the new sub-tree must store xyz (stride 6) like the rest
+	// of the tree - a fresh gear defaults to the 2D stride and its trail
+	// would be skipped by every 3D draw - and gets a full pose (a clone may
+	// carry its own children; pose3All uses the parent link wired above).
+	function placeGear(gear, parent) {
+		var carry = parent ? (parent.phase != null ? parent.phase : parent.rot) : 0;
+		Gear.update(gear, parent, parent ? parent.cx : 0, parent ? parent.cy : 0, carry, 0, App.globalSpeed);
+		if (App.dim === '3d') { Gear.setTreeStride([gear], true); Gear.pose3All(gear, parent); }
 	}
 
 	// spread a parent's children evenly: child i sits at i * 360/N degrees.
@@ -891,7 +896,79 @@
 		if (sibs.length > 1 && App.overlay.on) App.invalidateOverlay();
 	};
 
-	App.setSymmetry = function (v) { App.symmetry = !!v; };
+	// commit the live tree to the symmetry model: every level becomes a
+	// uniform rosette - each parent gets the level's max child count,
+	// cloned from the level's first gear (its template), re-spread over
+	// i*TAU/n. the level template keeps its identity (and its live trace);
+	// everything else is rebuilt. after this, the live tree is exactly what
+	// a symmetry save stores (one gear per level + counts), so that save is
+	// lossless. counts are captured BEFORE any mutation: rebuilding level
+	// L-1 replaces the very parents that level L's max is measured over.
+	// false when the uniform tree would exceed the gear limit.
+	function normalizeSymmetry() {
+		var counts = [];
+		for (var L = 1; L <= maxDepth(); L++) counts.push(App.levelCount(L));
+		var size = App.roots.length, total = App.roots.length;
+		for (var c = 0; c < counts.length; c++) { size *= counts[c]; total += size; }
+		if (total > MAX_GEARS) return false;
+		for (var d = 0; d < counts.length; d++) {
+			var n = counts[d];
+			var parents = gearsAtDepth(d);
+			if (!parents.length || !n) break;
+			var template = null;
+			for (var i = 0; i < parents.length && !template; i++)
+				if (parents[i].children.length) template = parents[i].children[0];
+			if (!template) break;
+			for (var j = 0; j < parents.length; j++) {
+				var parent = parents[j];
+				parent.children.length = 0;
+				if (j === 0) {
+					// slot 0 of a spread level is always phase 0
+					template.phase0 = 0;
+					parent.children.push(template);
+					placeGear(template, parent);
+				}
+				for (var k = (j === 0 ? 1 : 0); k < n; k++)
+					makeChildFromTemplate(parent, template, (k * TAU) / n);
+			}
+		}
+		return true;
+	}
+
+	App.setSymmetry = function (v) {
+		v = !!v;
+		if (v === App.symmetry) return;
+		App.symmetry = v;
+		if (!v) return;
+		// committing to symmetry rewrites the live tree into uniform
+		// rosettes; refuse the toggle (and re-sync the checkbox) when that
+		// would exceed the gear limit.
+		if (!normalizeSymmetry()) {
+			App.symmetry = false;
+			GUI.setSymmetry(false);
+			toast('gear limit (' + MAX_GEARS + ') reached');
+			return;
+		}
+		rebuildAll();
+		applyColorMode();
+		syncMenu();
+		afterSceneChange();
+		GUI.rebuildLevels();
+	};
+	// load path: an old-format save (full tree) with symmetry on predates the
+	// one-gear-per-level format - commit it so what is loaded is exactly what
+	// the next symmetry save would store (returns false at the gear limit;
+	// the caller keeps the loaded tree as-is).
+	App.normalizeSymmetry = function () {
+		if (!normalizeSymmetry()) {
+			toast('gear limit (' + MAX_GEARS + ') reached');
+			return false;
+		}
+		rebuildAll();
+		applyColorMode();
+		syncMenu();
+		return true;
+	};
 
 	// soft cap on stored trail points. lowering it below the current count
 	// evicts the oldest points and hands the memory back.
@@ -902,6 +979,14 @@
 
 	App.removeGear = function (gear) {
 		if (!gear.parent) return;
+		if (App.symmetry) {
+			// symmetry: the rosette stays uniform, so removing one gear
+			// shrinks the WHOLE level (one gear per level remains
+			// savable), not just this parent's branch.
+			var L = depthOf(gear);
+			App.applyLevel(L, App.levelCount(L) - 1);
+			return;
+		}
 		var parent = gear.parent;
 		var idx = parent.children.indexOf(gear);
 		if (idx >= 0) parent.children.splice(idx, 1);
@@ -921,8 +1006,8 @@
 	};
 
 	// saved file name carries the scene's identity - it becomes the preset
-	// label in the dropdown (presets_combine.py takes the name from the file):
-	// dimension, trail drawn, whole mode, then a timestamp.
+	// label in the dropdown (both preset scripts take the name from the
+	// file): dimension, trail drawn, whole mode, then a timestamp.
 	function pad2(n) { return (n < 10 ? '0' : '') + n; }
 	function sceneFileName() {
 		var d = new Date();
@@ -945,22 +1030,31 @@
 		a.href = url; a.download = name;
 		document.body.appendChild(a); a.click(); document.body.removeChild(a);
 		URL.revokeObjectURL(url);
-		toast('saved ' + name + ' - presets_combine.py adds it as a preset');
+		toast('saved ' + name + ' - make it a preset with presets_merge_to_default.js.py or link_presets_to_html.py');
 	};
 
 	// ---- presets --------------------------------------------------------
 	// the page cannot list its own directory under file://, so the preset
-	// list ships inside default.js: presets_combine.py (run by hand from the
-	// app directory) merges the scene files saved next to index.html into
-	// default.js's PRESETS array and renames the consumed files *.delete-me.
+	// list is fed by what index.html loads: default.js's PRESETS (the
+	// single-file workflow - presets_merge_to_default.js.py merges saved
+	// scene files into it) plus the <script class="preset"> tags managed by
+	// link_presets_to_html.py (the multi-file workflow - the files stay
+	// where they are and each appends one PRESETS entry).
 	function presetList() {
 		var raw = window.PRESETS;
 		if (!raw || !raw.length) return [];
-		var out = [];
-		for (var i = 0; i < raw.length; i++) {
+		// a name can appear twice (bundled in default.js AND linked as a
+		// file, or the same file opened via the dialog appends it again):
+		// the LAST occurrence wins, original order otherwise preserved.
+		var seen = {}, out = [];
+		for (var i = raw.length - 1; i >= 0; i--) {
 			var p = raw[i];
-			if (p && typeof p.name === 'string' && p.scene && typeof p.scene === 'object') out.push(p);
+			if (!p || typeof p.name !== 'string' || !p.scene || typeof p.scene !== 'object') continue;
+			if (seen[p.name]) continue;
+			seen[p.name] = true;
+			out.push(p);
 		}
+		out.reverse();
 		return out;
 	}
 	App.presets = presetList;
@@ -1007,8 +1101,25 @@
 	// by Settings.snapshotApp from the same schema that loads/validates it.
 	// dimension fields (dim / camera) are top-level scene fields, not part of
 	// the `app` bag; per-gear second-axis speeds ride on the gears (speed2).
+	// keep only the first child at every depth: the spine of a symmetry save.
+	function collapseSpine(g) {
+		while (g.children.length > 1) g.children.pop();
+		if (g.children.length) collapseSpine(g.children[0]);
+	}
+
 	function sceneObject() {
 		var o = Gear.serialize(App.roots, App.view, App.globalSpeed, App.colorMode, Settings.snapshotApp(App));
+		if (App.symmetry) {
+			// symmetry mode: the live tree is a uniform rosette (every gear of
+			// a level is a clone of that level's first gear, spread by phase0),
+			// so the save keeps that ONE gear per level plus the per-level
+			// counts - the loader re-expands (gear.js expandSymmetric). the
+			// collapse runs on the serialized copy; the live tree is untouched.
+			var counts = [];
+			for (var L = 1; L <= maxDepth(); L++) counts.push(App.levelCount(L));
+			for (var i = 0; i < o.gears.length; i++) collapseSpine(o.gears[i]);
+			if (counts.length) o.levels = counts;
+		}
 		o.dim = App.dim;
 		o.camera = App.dim === '3d' && App.cam ? Camera3.cloneCamera(App.cam) : null;
 		return o;
@@ -1036,12 +1147,25 @@
 			loadObject(JSON.parse(t));
 			return;
 		}
+		// the module below exports EITHER SETTINGS (a saved scene file or a
+		// standalone default.js) OR one more PRESETS entry (a preset file
+		// linked by link_presets_to_html.py - those must not overwrite
+		// window.SETTINGS or the startup scene would break). capture which
+		// one this eval set and load that scene.
+		var hadSettings = window.SETTINGS;
+		var presetCount = window.PRESETS ? window.PRESETS.length : 0;
 		var s = document.createElement('script');
 		s.textContent = txt;
 		document.body.appendChild(s);
 		document.body.removeChild(s);
-		if (!window.SETTINGS) throw new Error('no SETTINGS export found');
-		loadObject(window.SETTINGS);
+		var scene = null;
+		if (window.SETTINGS !== hadSettings) scene = window.SETTINGS;
+		else if (window.PRESETS && window.PRESETS.length > presetCount) {
+			var last = window.PRESETS[window.PRESETS.length - 1];
+			if (last && last.scene) scene = last.scene;
+		}
+		if (!scene) throw new Error('no SETTINGS export found');
+		loadObject(scene);
 		GUI.setPresets && GUI.setPresets();
 	}
 
@@ -1114,6 +1238,10 @@
 		}
 		applyScene3D(obj);
 		if (App.mode === 'whole') snapSceneForWhole();
+		// old-format save (full tree) with symmetry on: commit it to uniform
+		// rosettes so what is loaded is exactly what the next symmetry save
+		// would store (new saves re-expand in Gear.deserialize instead).
+		if (App.symmetry && !obj.levels) App.normalizeSymmetry();
 		afterSceneChange();
 		GUI.rebuildLevels();
 	}
@@ -2299,6 +2427,9 @@
 		Settings.applyApp(initApp, App, GUI);
 		// restore dimension / spin / camera (top-level scene fields).
 		applyScene3D(rawScene);
+		// old-format save (full tree) with symmetry on: same commit as the
+		// loadObject path (new saves already re-expanded in deserialize).
+		if (App.symmetry && !(rawScene && rawScene.levels)) App.normalizeSymmetry();
 
 		computeLayout();
 		window.addEventListener('resize', computeLayout);

@@ -23,6 +23,8 @@ function makeEl(tag) {
 		style: {}, children: [], listeners: {},
 		className: '', textContent: '', value: '', checked: false, disabled: false,
 		offsetWidth: 240, offsetHeight: 320,
+		// file inputs: tests set files[0]._text and dispatch 'change'
+		files: [],
 		firstChild: null
 	};
 	node.classList = makeClassList(node);
@@ -112,6 +114,10 @@ function boot(opts) {
 		// downloadScene() needs Blob + object URLs; the stub captures bytes.
 		Blob: function (parts) { this.parts = parts; },
 		URL: { createObjectURL: function () { return 'blob:stub'; }, revokeObjectURL: function () { } },
+		// the open-file path (App.loadFile) reads through a FileReader;
+		// synchronous here so a test can drive loadFile -> change -> onload
+		// without promise plumbing.
+		FileReader: function () { this.result = ''; },
 		localStorage: opts.autosave === false ? null : {
 			_d: {},
 			getItem: function (k) { return this._d[k] || null; },
@@ -120,6 +126,13 @@ function boot(opts) {
 		},
 		requestAnimationFrame: function (fn) { frames.push(fn); return frames.length; },
 		devicePixelRatio: 1, innerWidth: 900, innerHeight: 700
+	};
+	// readAsText reads the test-provided _text (falling back to the name) and
+	// fires onload synchronously - mirrors the browser's async read closely
+	// enough for the loadFile -> change -> loadSceneText path.
+	sandbox.FileReader.prototype.readAsText = function (file) {
+		this.result = file && file._text != null ? file._text : String(file && file.name || '');
+		if (this.onload) this.onload();
 	};
 	sandbox.addEventListener = function () { };
 	sandbox.removeEventListener = function () { };

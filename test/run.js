@@ -1243,7 +1243,16 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 (function shippedDefaultFile() {
 	var dj = require('../default.js');
 	ok(dj.SETTINGS && dj.SETTINGS.gears && dj.SETTINGS.gears.length > 0, 'shipped default.js exports its startup scene');
-	ok(Array.isArray(dj.PRESETS) && dj.PRESETS.length === 0, 'shipped default.js exports an empty preset list');
+	ok(Array.isArray(dj.PRESETS), 'shipped default.js exports a preset list');
+	var good = true, names = [];
+	for (var i = 0; i < dj.PRESETS.length; i++) {
+		var p = dj.PRESETS[i];
+		if (!p || typeof p.name !== 'string' || !p.name ||
+			!p.scene || typeof p.scene !== 'object' || !Array.isArray(p.scene.gears)) good = false;
+		if (p && typeof p.name === 'string') names.push(p.name);
+	}
+	ok(good, 'shipped presets are valid {name, scene} entries');
+	ok(names.length === new Set(names).size, 'shipped preset names are unique', names.join(','));
 })();
 
 // ---- 0.7.5: auto-camera speed sliders (log scale, pitch bounce) -------
@@ -1311,7 +1320,7 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	['python3', 'python'].some(function (cmd) {
 		try { cp.execSync(cmd + ' --version', { stdio: 'pipe' }); py = cmd; return true; } catch (e) { return false; }
 	});
-	if (!py) { ok(true, 'python not available - presets_combine.py checks skipped'); return; }
+	if (!py) { ok(true, 'python not available - presets_merge_to_default.js.py checks skipped'); return; }
 	function moduleJs(s) {
 		return '(function (root) {\n\tvar S = ' + JSON.stringify(s) + ';\n' +
 			'\tif (typeof module !== \'undefined\' && module.exports) module.exports = S;\n' +
@@ -1319,7 +1328,7 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 			'})(typeof window !== \'undefined\' ? window : globalThis);\n';
 	}
 	function runCombine(dir) {
-		cp.execSync(py + ' ' + JSON.stringify(p.join(__dirname, '..', 'presets_combine.py')), { cwd: dir, stdio: 'pipe' });
+		cp.execSync(py + ' ' + JSON.stringify(p.join(__dirname, '..', 'presets_merge_to_default.js.py')), { cwd: dir, stdio: 'pipe' });
 	}
 	function loadDefault(dir) {
 		var ctx = {};
@@ -1366,6 +1375,333 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 			'missing default.js is created (no startup scene, presets kept)');
 	} finally {
 		fs.rmSync(dir2, { recursive: true, force: true });
+	}
+})();
+
+// ---- 0.7.6: symmetry save - one gear per level ------------------------
+(function symmetrySave() {
+	function depthCounts(roots) {
+		var counts = [], level = roots;
+		for (;;) {
+			counts.push(level.length);
+			var next = [];
+			for (var i = 0; i < level.length; i++)
+				for (var j = 0; j < level[i].children.length; j++)
+					next.push(level[i].children[j]);
+			if (!next.length) break;
+			level = next;
+		}
+		return counts;
+	}
+	function gearSig(g) {
+		return [g.r, g.speed, g.speed2, g.internal, g.rot, g.trailCap,
+			g.pencil.d, g.pencil.width, g.pencil.c1.on, g.pencil.c1.color,
+			g.pencil.c2.on, g.pencil.c2.color, g.pencil.animSpeed, g.pencil.animMode].join('|');
+	}
+	function uniformLevels(roots) {
+		var level = roots.slice();
+		for (;;) {
+			if (level.length > 1) {
+				var s = gearSig(level[0]);
+				for (var i = 1; i < level.length; i++)
+					if (gearSig(level[i]) !== s) return false;
+			}
+			var next = [];
+			for (var j = 0; j < level.length; j++)
+				for (var k = 0; k < level[j].children.length; k++)
+					next.push(level[j].children[k]);
+			if (!next.length) break;
+			level = next;
+		}
+		return true;
+	}
+
+	App.resetScene();
+	App.setSymmetry(true);
+	App.applyLevel(1, 3);
+	App.applyLevel(2, 2);
+	ok(App.allGears.length === 10, 'symmetric scene: 1+3+6 gears', App.allGears.length);
+	ok(uniformLevels(App.roots), 'symmetry on: the live tree is uniform per level');
+
+	// the save keeps the one-gear-per-level spine + the per-level counts
+	App.markDirty();
+	w.flushTimers(1000);
+	var stored = JSON.parse(w.localStorage._d['spiro.autosave.v1']);
+	ok(stored.levels && stored.levels.join(',') === '3,2', 'symmetry save stores the per-level counts',
+		stored.levels && stored.levels.join(','));
+	var spine = stored.gears[0];
+	ok(spine.children.length === 1 && spine.children[0].children.length === 1 &&
+		spine.children[0].children[0].children.length === 0,
+		'symmetry save keeps one gear per level');
+
+	// the same scene with symmetry off is the full (larger) save
+	App.setSymmetry(false);
+	App.markDirty();
+	w.flushTimers(1000);
+	var full = JSON.parse(w.localStorage._d['spiro.autosave.v1']);
+	ok(!('levels' in full) && full.gears[0].children.length === 3,
+		'symmetry off: full save without counts');
+	ok(JSON.stringify(stored).length < JSON.stringify(full).length,
+		'symmetry save is smaller than the full save',
+		JSON.stringify(stored).length + ' vs ' + JSON.stringify(full).length);
+
+	// the loader re-expands the spine into the same rosette
+	var d = Gear.deserialize(JSON.parse(JSON.stringify(stored)));
+	ok(depthCounts(d.roots).join(',') === '1,3,6', 'expand: the full rosette is restored',
+		depthCounts(d.roots).join(','));
+	ok(uniformLevels(d.roots), 'expand: every level is uniform again');
+	var spreadOk = true;
+	var l1 = d.roots[0].children;
+	for (var i = 0; i < l1.length && spreadOk; i++)
+		for (var k = 0; k < l1[i].children.length; k++)
+			if (Math.abs(l1[i].children[k].phase0 - k * (Math.PI * 2) / l1[i].children.length) > 1e-9)
+				spreadOk = false;
+	ok(spreadOk, 'expand: phase0 is re-spread over i*2pi/n');
+	// and the expanded tree matches the pre-save one gear for gear
+	var live = App.allGears, exp = Gear.flatten(d.roots);
+	var match = live.length === exp.length;
+	for (var m = 0; m < live.length && match; m++)
+		if (gearSig(live[m]) !== gearSig(exp[m])) match = false;
+	ok(match, 'roundtrip: expanded gears equal the saved scene');
+
+	// toggling symmetry ON over an asymmetric tree commits it to a rosette
+	App.resetScene();
+	App.addSubGear(App.roots[0]);                 // 2 children (clone of the first)
+	var kids = App.roots[0].children;
+	kids[1].speed = 0.9;                          // siblings now differ
+	App.addSubGear(kids[0]);                       // level 2 under one parent only
+	ok(App.allGears.length === 1 + 2 + 1, 'asymmetric pre-state', App.allGears.length);
+	App.setSymmetry(true);
+	kids = App.roots[0].children;
+	ok(kids[0].speed === kids[1].speed, 'toggle-on: the level clones its template',
+		kids[0].speed + ' vs ' + kids[1].speed);
+	ok(App.allGears.length === 1 + 2 + 2 && App.levelCount(2) === 1,
+		'toggle-on: the deeper level is evened out (max count per level)',
+		App.allGears.length);
+	ok(uniformLevels(App.roots), 'toggle-on: the tree is uniform per level');
+
+	// removing a gear under symmetry shrinks the WHOLE level
+	App.applyLevel(1, 3);
+	App.removeGear(App.roots[0].children[1]);
+	kids = App.roots[0].children;
+	ok(kids.length === 2, 'symmetry remove: the level shrinks, not one branch', kids.length);
+	ok(Math.abs(kids[1].phase0 - Math.PI) < 1e-9, 'symmetry remove: siblings re-spread');
+
+	// an old-format save (full tree, symmetry on) commits on load
+	App.resetScene();
+	App.setSymmetry(true);
+	App.applyLevel(1, 4);
+	var oldFmt = Gear.serialize(App.roots, App.view, App.globalSpeed, App.colorMode, Settings.snapshotApp(App));
+	oldFmt.gears[0].children[2].speed = 0.11;     // desync one sibling (the old format allowed it)
+	oldFmt.app.symmetry = true;
+	var w3 = boot({ settings: oldFmt });
+	var k3 = w3.App.roots[0].children;
+	ok(k3.length === 4, 'old-format symmetric load: the level size survives', k3.length);
+	ok(k3[1].speed === k3[0].speed && k3[2].speed === k3[0].speed && k3[3].speed === k3[0].speed,
+		'old-format symmetric load: commits to the level template',
+		k3.map(function (g) { return g.speed; }).join(','));
+})();
+
+// ---- 0.7.6: the auto-rotate checkbox persists -------------------------
+(function autoRotatePersists() {
+	function findCheckbox(labelText) {
+		var found = null;
+		(function walk(n) {
+			if (found || !n) return;
+			if (n.children) {
+				for (var i = 0; i < n.children.length; i++) {
+					var c = n.children[i];
+					if (c.tagName === 'INPUT' && c.type === 'checkbox') {
+						for (var j = 0; j < n.children.length; j++) {
+							var s = n.children[j];
+							if (s !== c && s.textContent && s.textContent.indexOf(labelText) >= 0) { found = c; return; }
+						}
+					}
+				}
+			}
+			for (var k = 0; k < (n.children || []).length; k++) walk(n.children[k]);
+		})(w.byId.panel);
+		return found;
+	}
+	var d = Settings.defaultApp();
+	ok(d.autoRotate === false, 'autoRotate defaults to off');
+	ok(Settings.sanitizeApp({ autoRotate: 'x' }).autoRotate === false, 'garbage autoRotate -> off');
+	ok(Settings.sanitizeApp({ autoRotate: 1 }).autoRotate === true, 'autoRotate 1 sanitizes to true');
+
+	App.setAutoRotate(true);
+	ok(App.autoRotate === true, 'setAutoRotate turns it on');
+	App.markDirty();
+	w.flushTimers(1000);
+	var stored = JSON.parse(w.localStorage._d['spiro.autosave.v1']);
+	ok(stored.app && stored.app.autoRotate === true, 'autoRotate autosaves in the app bag');
+
+	var back = Gear.deserialize(JSON.parse(JSON.stringify(stored)));
+	ok(back.app.autoRotate === true, 'the saved app bag carries autoRotate');
+	var box = findCheckbox('auto-rotate camera');
+	ok(!!box, 'auto-rotate checkbox exists');
+	// a load where the saved value differs: the recipe must sync both
+	App.setAutoRotate(false);
+	Settings.applyApp(back.app, App, w.GUI);      // what loadObject does
+	ok(App.autoRotate === true && box.checked === true,
+		'applying the bag restores state + checkbox');
+	App.resetScene();
+	ok(App.autoRotate === false && box.checked === false,
+		'reset turns autoRotate back off (state + checkbox)');
+})();
+
+// ---- 0.7.6: opening a linked preset file (multi-file workflow) --------
+(function presetOpenDialog() {
+	var startup = Gear.serialize(Gear.defaultScene(), { zoom: 1, pan: [0, 0] }, 1, 'frequency');
+	var sceneA = Gear.serialize(Gear.defaultScene(), { zoom: 3, pan: [0, 0] }, 1, 'frequency');
+	var sceneB = Gear.serialize(Gear.defaultScene(), { zoom: 7, pan: [0, 0] }, 1, 'frequency');
+	// what link_presets_to_html.py writes: one PRESETS entry, never SETTINGS
+	var fileText = '// preset: bundled.js\n' +
+		'(function (root) {\n' +
+		'\tvar S = ' + JSON.stringify(sceneB) + ';\n' +
+		'\troot.PRESETS = (root.PRESETS || []).concat([{ name: "bundled", scene: S }]);\n' +
+		'})(typeof window !== \'undefined\' ? window : globalThis);\n';
+	var w2 = boot({ settings: startup, presets: [{ name: 'bundled', scene: sceneA }] });
+	var App2 = w2.App;
+	ok(App2.view.zoom === 1, 'linked boot: the startup scene loads', App2.view.zoom);
+	ok(App2.presets().length === 1, 'linked boot: the bundled preset is listed');
+
+	var captured = null;
+	var realCreate = w2.document.createElement;
+	w2.document.createElement = function (tag) {
+		var e = realCreate(tag);
+		if (tag === 'input') captured = e;
+		return e;
+	};
+	App2.loadFile();
+	w2.document.createElement = realCreate;
+	ok(!!captured, 'loadFile creates a file input');
+	captured.files = [{ name: 'bundled.js', _text: fileText }];
+	captured.dispatch('change');
+	ok(App2.view.zoom === 7, 'opening a preset file loads that file\'s scene', App2.view.zoom);
+	ok(w2.SETTINGS.view.zoom === 1, 'preset files do not clobber window.SETTINGS');
+	// the opened entry duplicates the bundled name: last one wins, once
+	var list = App2.presets();
+	ok(list.length === 1 && list[0].scene.view.zoom === 7,
+		'preset list dedupes by name (last wins)', list.length);
+	App2.loadPreset('bundled');
+	ok(App2.view.zoom === 7, 'loadPreset resolves the deduped (latest) entry');
+});
+
+// ---- 0.7.6: link_presets_to_html.py -----------------------------------
+(function presetsLinkPy() {
+	var cp = require('child_process'), fs = require('fs'), os = require('os'), p = require('path'), vm = require('vm');
+	var py = null;
+	['python3', 'python'].some(function (cmd) {
+		try { cp.execSync(cmd + ' --version', { stdio: 'pipe' }); py = cmd; return true; } catch (e) { return false; }
+	});
+	if (!py) { ok(true, 'python not available - link_presets_to_html.py checks skipped'); return; }
+	var root = p.join(__dirname, '..');
+	function runLink(dir) {
+		cp.execSync(py + ' ' + JSON.stringify(p.join(root, 'link_presets_to_html.py')), { cwd: dir, stdio: 'pipe' });
+	}
+	function moduleJs(s) {
+		return '(function (root) {\n\tvar S = ' + JSON.stringify(s) + ';\n' +
+			'\tif (typeof module !== \'undefined\' && module.exports) module.exports = S;\n' +
+			'\telse root.SETTINGS = S;\n' +
+			'})(typeof window !== \'undefined\' ? window : globalThis);\n';
+	}
+	// load like the browser would: default.js, then the managed tags in order
+	function loadAll(dir) {
+		var html = fs.readFileSync(p.join(dir, 'index.html'), 'utf8');
+		var order = [], re = /<script src="([^"]+)" class="preset"><\/script>/g, m;
+		while ((m = re.exec(html))) order.push(m[1]);
+		var ctx = {};
+		vm.createContext(ctx);
+		vm.runInContext(fs.readFileSync(p.join(dir, 'default.js'), 'utf8'), ctx, { filename: 'default.js' });
+		for (var i = 0; i < order.length; i++)
+			vm.runInContext(fs.readFileSync(p.join(dir, order[i]), 'utf8'), ctx, { filename: order[i] });
+		return { ctx: ctx, order: order };
+	}
+	var sA = Gear.serialize(Gear.defaultScene(), { zoom: 2, pan: [0, 0] }, 1, 'frequency');
+	var sB = Gear.serialize(Gear.defaultScene(), { zoom: 3, pan: [0, 0] }, 1, 'frequency');
+	var sC = Gear.serialize(Gear.defaultScene(), { zoom: 5, pan: [0, 0] }, 1, 'frequency');
+	var dir = fs.mkdtempSync(p.join(os.tmpdir(), 'spiro-link-'));
+	try {
+		fs.copyFileSync(p.join(root, 'index.html'), p.join(dir, 'index.html'));
+		var base = Gear.serialize(Gear.defaultScene(), { zoom: 1, pan: [0, 0] }, 1, 'frequency');
+		fs.writeFileSync(p.join(dir, 'default.js'),
+			'(function (root) {\n' +
+			'\tvar S = ' + JSON.stringify(base) + ';\n' +
+			'\tvar PRESETS = [];\n' +
+			'\tif (typeof module !== \'undefined\' && module.exports) module.exports = { SETTINGS: S, PRESETS: PRESETS };\n' +
+			'\telse { root.SETTINGS = S; root.PRESETS = PRESETS; }\n' +
+			'})(typeof window !== \'undefined\' ? window : globalThis);\n');
+		fs.writeFileSync(p.join(dir, 'a.js'), moduleJs(sA));
+		fs.writeFileSync(p.join(dir, 'b.js'), moduleJs(sB));
+		fs.writeFileSync(p.join(dir, 'plain.json'), JSON.stringify(sA));
+		fs.writeFileSync(p.join(dir, 'not-a-scene.js'), 'console.log("x");\n');
+
+		// 1. first run: a tag per scene file, files converted, markers written
+		runLink(dir);
+		var html1 = fs.readFileSync(p.join(dir, 'index.html'), 'utf8');
+		ok(html1.indexOf('<script src="a.js" class="preset"></script>') > 0 &&
+			html1.indexOf('<script src="b.js" class="preset"></script>') > 0,
+			'link inserts a preset tag per scene file');
+		var dIdx = html1.indexOf('src="default.js"'), aIdx = html1.indexOf('src="a.js"'), mIdx = html1.indexOf('src="js/main.js"');
+		ok(dIdx > -1 && dIdx < aIdx && aIdx < mIdx, 'tags sit between default.js and js/main.js');
+		ok(html1.indexOf('src="plain.json"') < 0, 'json files are not linked');
+		var fa = fs.readFileSync(p.join(dir, 'a.js'), 'utf8');
+		ok(fa.split('\n')[0] === '// preset: a.js', 'the marker line records the file name');
+		ok(fa.indexOf('root.PRESETS') > 0 && fa.indexOf('root.SETTINGS = S') < 0,
+			'linked files append to PRESETS, never set SETTINGS');
+		// second run: byte-stable
+		runLink(dir);
+		ok(fs.readFileSync(p.join(dir, 'index.html'), 'utf8') === html1 &&
+			fs.readFileSync(p.join(dir, 'a.js'), 'utf8') === fa,
+			'a second run changes nothing (idempotent)');
+
+		// the page picks the presets up in tag order, startup scene intact
+		var sim = loadAll(dir);
+		ok(sim.ctx.SETTINGS && sim.ctx.SETTINGS.view.zoom === 1,
+			'linked files leave the startup scene alone');
+		ok(sim.ctx.PRESETS.map(function (x) { return x.name; }).join(',') === 'a,b',
+			'linked files append their presets in tag order',
+			sim.ctx.PRESETS.map(function (x) { return x.name; }).join(','));
+		ok(sim.ctx.PRESETS[0].scene.view.zoom === 2 && sim.ctx.PRESETS[1].scene.view.zoom === 3,
+			'linked preset scenes keep their content');
+
+		// 2. rename: the tag follows the file (via its marker)
+		fs.renameSync(p.join(dir, 'a.js'), p.join(dir, 'a2.js'));
+		runLink(dir);
+		var html2 = fs.readFileSync(p.join(dir, 'index.html'), 'utf8');
+		ok(html2.indexOf('src="a2.js"') > 0 && html2.indexOf('src="a.js"') < 0, 'rename moves the tag');
+		ok(fs.readFileSync(p.join(dir, 'a2.js'), 'utf8').split('\n')[0] === '// preset: a2.js',
+			'the marker follows the rename');
+
+		// 3. delete: the tag is dropped
+		fs.unlinkSync(p.join(dir, 'b.js'));
+		runLink(dir);
+		var html3 = fs.readFileSync(p.join(dir, 'index.html'), 'utf8');
+		ok(html3.indexOf('src="b.js"') < 0, 'delete drops the tag');
+		ok(html3.indexOf('src="a2.js"') > 0, 'other tags survive the cleanup');
+
+		// 4. a new file gains a tag on the next run
+		fs.writeFileSync(p.join(dir, 'c.js'), moduleJs(sC));
+		runLink(dir);
+		var sim2 = loadAll(dir);
+		ok(sim2.ctx.PRESETS.map(function (x) { return x.name; }).join(',') === 'a2,c',
+			'a new file is picked up on the next run',
+			sim2.ctx.PRESETS.map(function (x) { return x.name; }).join(','));
+
+		// 5. the merge script leaves linked files alone, consumes the rest
+		fs.writeFileSync(p.join(dir, 'plain2.js'), moduleJs(sB));
+		cp.execSync(py + ' ' + JSON.stringify(p.join(root, 'presets_merge_to_default.js.py')), { cwd: dir, stdio: 'pipe' });
+		ok(fs.existsSync(p.join(dir, 'a2.js')) && fs.existsSync(p.join(dir, 'c.js')),
+			'merge leaves linked files in place');
+		ok(fs.existsSync(p.join(dir, 'plain2.js.delete-me')), 'merge consumes the unlinked file');
+		var djCtx = {};
+		vm.createContext(djCtx);
+		vm.runInContext(fs.readFileSync(p.join(dir, 'default.js'), 'utf8'), djCtx, { filename: 'default.js' });
+		ok(djCtx.PRESETS.map(function (x) { return x.name; }).join(',') === 'plain,plain2',
+			'merged presets land in default.js only',
+			djCtx.PRESETS.map(function (x) { return x.name; }).join(','));
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
 	}
 })();
 

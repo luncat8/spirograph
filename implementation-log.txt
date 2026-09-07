@@ -607,6 +607,114 @@ REWRITES 0.6 (the plane-sweep / global spin model was rejected by the user).
     file, both presets visibly draw colored trails (pngjs pixel analysis
     of screenshots), zero console errors.
 
+## done (0.7.6) - task 0.7.6.txt implemented (symmetry save, auto-rotate persist, multi-file presets)
+
+Three items from 0.7.6.txt. All headless (`node test/run.js`, now 316
+checks) and both python scripts verified in temp dirs; no headless-chromium
+re-verification this round (no WebGL-path change).
+
+### 1. symmetry mode saves one gear per level
+- invariant: while symmetry is on, every level is a uniform rosette (all
+  gears of a level are clones of that level's first gear, spread by phase0
+  i*TAU/n). the save exploits it instead of trusting it blindly.
+- SAVE (main.js sceneObject): when App.symmetry, the serialized copy (NOT
+  the live tree) is collapsed to the one-gear-per-level spine (keep
+  children[0] at every depth) and a top-level `levels: [n1, n2, ...]` is
+  appended (App.levelCount per level, max across parents). symmetry off is
+  byte-identical to before (no `levels` field).
+- LOAD (gear.js deserialize): new sanitizeLevels (0..12 ints, same ceiling
+  as main.js MAX_LEVEL_N - garbage/absent -> null -> load as-is) +
+  cloneGearData (structural clone incl. sub-tree; pencil slots fresh via
+  normalizePencil) + expandSymmetric: level by level, each parent gets n
+  clones of the level template re-spread i*TAU/n; the saved spine gear
+  (first parent, slot 0) is kept as-is so the object graph survives.
+  expansion runs BEFORE initRuntime walks the final tree.
+- COMMIT (main.js normalizeSymmetry): turning symmetry ON rewrites the
+  live tree into uniform rosettes (per parent: keep slot-0 template at
+  phase 0, makeChildFromTemplate the rest at i*TAU/n; counts captured
+  BEFORE mutation because rebuilding level L-1 replaces level L's parents).
+  false + toast + checkbox re-sync when the uniform tree would exceed
+  MAX_GEARS. called from App.setSymmetry(true), App.loadObject (old-format
+  full save with symmetry on), and init() (autosave / window.SETTINGS
+  restore path - it does NOT go through loadObject).
+- removeGear under symmetry routes to App.applyLevel(L, count-1): the
+  whole level shrinks (one gear per level stays savable), not one branch.
+- makeChildFromTemplate's placement block factored to placeGear (shared
+  with the spine re-placement); no behavior change.
+- why the commit step (not just the save): without it, toggling symmetry
+  ON over an asymmetric tree would silently lose the differences on the
+  next save - what you see must equal what the save stores. old
+  full-format symmetric saves re-commit on load for the same reason.
+
+### 2. auto-rotate checkbox persists
+- one APP_SCHEMA entry in settings.js (autoRotate, def false, persist,
+  clean boolOff, apply through App.setAutoRotate so ON-at-load marks the
+  view dirty and OFF re-bakes the settled camera, then GUI.setAutoRotate
+  syncs the checkbox). the GUI checkbox + syncer already existed (0.7.5
+  built them session-only); the schema entry is the whole app-side change.
+- settings.js LIMITS comment + main.js field comment + setAutoYaw comment
+  updated ("session-only" is gone); resetScene's direct `App.autoRotate =
+  false` line removed (the applyApp defaults restore it now).
+
+### 3. two ways to store/load presets
+- presets_combine.py RENAMED to presets_merge_to_default.js.py (docstring,
+  HEADER, usage, index.html comment, gui.js help, main.js toast, README).
+  it now SKIPS files whose first line is a `// preset:` marker (the link
+  workflow owns them - consuming one would orphan its index.html tag) and
+  reports them separately.
+- NEW link_presets_to_html.py (self-contained, same style): finds the .js
+  scene files in the app dir (default.js / *.delete-me / non-scenes
+  skipped; .json noted - it cannot be a <script> tag), converts each to a
+  preset module (scene kept; `// preset: NAME.js` marker line on top;
+  `root.PRESETS = (root.PRESETS || []).concat([{name: stem, scene: S}])`;
+  node exports {SETTINGS, NAME}) and inserts one
+  `<script src="NAME.js" class="preset"></script>` tag per file between
+  the default.js tag and js/main.js. reconciles on every run: rename
+  (file matched by its marker) moves the tag + rewrites the file; delete
+  drops the tag; new file gains a tag; re-run is byte-stable (a file is
+  only rewritten when its name/marker changed or the PRESETS export went
+  missing, so manual scene edits inside survive). only its own one-line
+  tag format is managed - hand-edited tag variations are left alone.
+- app side: linked files never set window.SETTINGS (several would clobber
+  the startup scene), so loadSceneText now detects WHICH export the eval
+  set (SETTINGS reference changed, else the last appended PRESETS entry)
+  and loads that - opening a linked preset file via `o` works. presetList
+  dedupes by name (last wins): a name can be bundled in default.js AND
+  linked as a file, or re-appended by opening the file.
+- shipped default.js: header comment updated to the new script names and
+  CRLF normalized to LF (repo standard; the merge script's writer already
+  emits LF, so a future merge run is byte-stable with it). its 3 real
+  presets are untouched.
+
+### tests (316 checks, +46 net)
+- fixed two STALE checks that predate this task: shipped default.js now
+  ships 3 real presets (assert shape: valid {name, scene} entries + unique
+  names, not an empty list), and the combine test pointed at the old
+  script name (now presets_merge_to_default.js.py).
+- new symmetrySave: spine + levels in the autosave, symmetry-off save has
+  no levels and is larger, expand restores 1,3,6 uniform with phase0
+  re-spread, expanded gears equal the live scene gear-for-gear (sig incl.
+  rot), toggle-on commits an asymmetric tree (siblings cloned to the
+  template, deeper level evened to the max count), remove shrinks the
+  whole level + re-spreads, old-format full save with symmetry on commits
+  on boot (desynced sibling replaced by the template).
+- new autoRotatePersists: schema default/sanitize, autosave carries it in
+  the app bag, applying a differing bag syncs state + the real checkbox
+  (found by label text in the stub panel), reset turns it back off.
+- new presetOpenDialog: boot with settings+presets, drive App.loadFile
+  through the new FileReader stub (capture the created input, set
+  files[0]._text, dispatch change) with a linked-format file -> that
+  file's scene loads, window.SETTINGS untouched, dropdown dedupes (last
+  wins), loadPreset resolves the latest entry.
+- new presetsLinkPy (temp dir): tag insert + placement between default.js
+  and js/main.js, json not linked, marker + PRESETS-only export written,
+  byte-stable second run, browser-order vm load (startup scene survives,
+  presets in tag order, content intact), rename moves tag + marker,
+  delete drops tag, new file picked up next run, merge script leaves
+  linked files in place and consumes the unlinked one into default.js.
+- stub-dom: FileReader stub (synchronous readAsText -> onload) + files:[]
+  on every stub element so the open-file path is drivable headless.
+
 ## next
 - optional polish (from the 0.6 plan's future-work list): real near-plane
   segment clipping (currently edge-clamped streaks when inside the figure), 

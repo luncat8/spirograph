@@ -297,3 +297,71 @@
 - a preset select should reset to its placeholder option after every pick:
   picking the same entry twice in a row never fires a second change event
   otherwise.
+
+## symmetry saves: one gear per level (0.7.6)
+- a symmetry save must not TRUST the live tree and serialize it collapsed:
+  it must ENFORCE the invariant first. if the user toggles symmetry ON over
+  an asymmetric tree (different speeds, uneven counts), a naive "keep
+  children[0] per level" save silently drops the differences - the rosette
+  re-expands as uniform clones on load. the fix is a COMMIT step (normalize
+  the live tree to uniform rosettes when symmetry is switched on, and when
+  an old full-format symmetric save loads): what you see equals what the
+  save stores. old files keep loading (absent `levels` = full form, no
+  legacy branch).
+- capture the per-level counts BEFORE mutating the tree. rebuilding level
+  L-1 replaces the very parents that level L's max count is measured over,
+  so a top-down loop that reads levelCount(L) while walking loses the
+  original max as soon as the level above it is rewritten.
+- keep the saved SPINE gear (first parent, slot 0) as the same object when
+  expanding - only clone the other slots. the loader already deserialized
+  it, so reusing it preserves the object graph (and its identity for any
+  downstream reference), and it is the anchor the next level's template is
+  read from.
+- expansion runs in Gear.deserialize BEFORE initRuntime walks the final
+  tree, so the cloned sub-trees get their runtime (rings, parent links,
+  stride) in one pass. cloning a deserialized gear is a plain field copy
+  straight into makeGear (pencil slots as fresh {on,color} for
+  normalizePencil) - no live-tree machinery, no fitToParent (the saved
+  sizes are already parent-correct).
+- counts are validated 0..12 in the LOADER (gear.js), matching main.js
+  MAX_LEVEL_N. a reduced file is only valid because the app can only
+  produce counts in that band; the loader clamps the same way it does the
+  level sliders, so a hand-edited file degrades instead of exploding.
+
+## multi-file presets: managed <script> tags + a file-internal marker (0.7.6)
+- a page loaded from file:// cannot list its directory, so a "preset
+  folder" needs a manifest. two viable manifests: (a) merge everything
+  into one default.js (single file, the preset list ships in the page), or
+  (b) keep the files and have index.html <script>-tag each one (multi
+  file). (b) only works if SOMETHING keeps the tags in sync with the files
+  - hence link_presets_to_html.py, which owns tags of its own one-line
+  format and reconciles them on every run.
+- the RENAME tracker must live in the FILE, not a sidecar: a `// preset:
+  NAME.js` first line. a sidecar (json/yaml map) is a third thing to keep
+  in sync and dies the moment the user copies/renames the file alone. the
+  marker survives a rename (it moves with the file), so the script can
+  match "this file used to be called X, and X still has a tag" and move
+  the tag. delete drops the tag because no file claims it anymore.
+- a preset file must append to window.PRESETS, NEVER assign
+  window.SETTINGS: several preset <script> tags load in sequence and a
+  bare `root.SETTINGS = S` would let the LAST one clobber the startup
+  scene. `root.PRESETS = (root.PRESETS || []).concat([entry])` composes.
+  the app then dedupes the dropdown by name (last wins), since a name can
+  be bundled in default.js AND linked as a file, or re-appended by opening
+  the file.
+- when a <script> module can set one of several globals, detect which one
+  it ACTUALLY set instead of assuming: snapshot the SETTINGS reference and
+  the PRESETS length before the eval, and afterwards take "SETTINGS changed
+  -> that scene, else the last appended PRESETS entry". assuming
+  `window.SETTINGS` (the old code) breaks the moment a preset-only module
+  runs.
+- idempotency is a feature, not a nicety: the user re-runs the script after
+  every rename/delete. make it byte-stable - rewrite a file only when its
+  name/marker changed or the PRESETS export went missing (so hand edits to
+  the scene inside survive), and only touch HTML lines matching the tag
+  format the script itself writes. hand-edited tag variations are out of
+  scope by design (documented), not silently adopted.
+- the two preset scripts must not fight: the merge script consumes +
+  renames files to *.delete-me, which would orphan a linked file's index.html
+  tag. it now skips any file whose first line is the `// preset:` marker
+  (the link workflow owns it). each script recognizes the other's output.

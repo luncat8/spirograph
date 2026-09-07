@@ -2,21 +2,25 @@
 """Combine the spirograph scene files in this directory into default.js.
 
 The app runs from file:// and cannot list a directory, so the panel's preset
-dropdown is fed by default.js itself. This script (run from the directory
-that holds index.html + default.js):
+dropdown is fed by what index.html loads. This script (run from the directory
+that holds index.html + default.js) is the SINGLE-FILE half of the preset
+system (link_presets_to_html.py is the multi-file half - it inserts the
+scene files into index.html as <script> tags instead):
 
   - finds every saved scene file in the working directory (*.js SETTINGS
-    modules or raw *.json with a "gears" array; default.js and already
-    combined *.delete-me files are skipped, as is anything that does not
-    parse as a scene),
+    modules or raw *.json with a "gears" array; default.js, already combined
+    *.delete-me files and files linked by link_presets_to_html.py -
+    recognized by their leading `// preset:` marker - are skipped, as is
+    anything that does not parse as a scene),
   - appends each one to default.js's PRESETS list (preset name = file name
     without its extension; a saved name like 3d-tails-whole-yy-mm-dd-hh-mm-ss
     says what the scene is),
   - rewrites default.js (the startup scene SETTINGS is preserved) and
     renames every consumed file to <name>.delete-me so the next run does not
-    add it twice - the rename IS the "already combined" marker.
+    add it twice - the rename IS the "already combined" marker. linked files
+    are left alone: consuming one would orphan its index.html tag.
 
-Usage:  python3 presets_combine.py        (from the app directory)
+Usage:  python3 presets_merge_to_default.js.py   (from the app directory)
 """
 
 import json
@@ -30,8 +34,9 @@ HEADER = (
 	"// spirograph default scene + preset list.\n"
 	"// SETTINGS = the startup scene (loads when there is no autosave);\n"
 	"// PRESETS = the panel's preset dropdown. regenerate with\n"
-	"// presets_combine.py: it appends the scene files saved next to\n"
-	"// index.html and renames the consumed files to *.delete-me.\n"
+	"// presets_merge_to_default.js.py: it appends the scene files saved\n"
+	"// next to index.html and renames the consumed files to *.delete-me\n"
+	"// (link_presets_to_html.py is the multi-file alternative).\n"
 )
 
 
@@ -144,10 +149,20 @@ def main():
 
 	added = []
 	skipped = []
+	linked = []
 	for path in sorted(cwd.iterdir(), key=lambda p: p.name):
 		if not path.is_file() or path.name == DEFAULT_NAME or path.name.endswith(DELETED_SUFFIX):
 			continue
 		if path.suffix not in (".js", ".json"):
+			continue
+		# linked by link_presets_to_html.py (marker line): it belongs to
+		# index.html, not to this file - consuming it would orphan the tag.
+		try:
+			first = path.read_text(encoding="utf-8").split("\n", 1)[0].strip()
+		except OSError:
+			first = ""
+		if first.startswith("// preset:"):
+			linked.append(path.name)
 			continue
 		obj = read_scene(path)
 		if obj is None:
@@ -158,8 +173,13 @@ def main():
 		added.append(path)
 
 	if not added:
+		extra = []
+		if skipped:
+			extra.append("skipped: " + ", ".join(skipped))
+		if linked:
+			extra.append("linked (index.html): " + ", ".join(linked))
 		print("no scene files found - " + DEFAULT_NAME + " unchanged"
-			  + ("" if not skipped else " (skipped: " + ", ".join(skipped) + ")"))
+		  + ("" if not extra else " (" + "; ".join(extra) + ")"))
 		return
 
 	presets = [by_name[k] for k in sorted(by_name)]
@@ -181,6 +201,8 @@ def main():
 	parts = ["+ " + n for n in added_names] + ["* " + n + " (replaced)" for n in replaced_names]
 	print(DEFAULT_NAME + ": " + ", ".join(parts) + " (" + str(len(presets)) + " presets total)")
 	print("renamed to *" + DELETED_SUFFIX + ": " + ", ".join(p.name + DELETED_SUFFIX for p in added))
+	if linked:
+		print("left alone (linked in index.html): " + ", ".join(linked))
 	if skipped:
 		print("skipped (not scenes): " + ", ".join(skipped), file=sys.stderr)
 	if scene is None:

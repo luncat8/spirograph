@@ -789,6 +789,66 @@
 		};
 	}
 
+	// a scene saved while symmetry mode was on stores ONE gear per level (the
+	// first gear of each level, a "spine") plus the per-level child counts in
+	// obj.levels - the loader re-expands the rosette. counts are 0..12, the
+	// same ceiling as main.js's level sliders (MAX_LEVEL_N). anything else
+	// (garbage, or a full save without the field) loads as-is.
+	function sanitizeLevels(v) {
+		if (!v || typeof v !== 'object' || !v.length) return null;
+		for (var i = 0; i < v.length; i++) {
+			var n = v[i];
+			if (typeof n !== 'number' || n !== Math.floor(n) || n < 0 || n > 12) return null;
+		}
+		return v;
+	}
+
+	// structural clone of a deserialized gear, sub-tree included -
+	// expansion must not share objects between siblings. pencil slots are
+	// fresh (plain {on, color} fields straight into normalizePencil).
+	function cloneGearData(g) {
+		var c = makeGear({
+			r: g.r, speed: g.speed, speed2: g.speed2 || 0, internal: g.internal,
+			phase0: g.phase0 || 0, rot: g.rot, trailCap: g.trailCap,
+			pencil: {
+				d: g.pencil.d, width: g.pencil.width,
+				c1: { on: g.pencil.c1.on, color: g.pencil.c1.color },
+				c2: { on: g.pencil.c2.on, color: g.pencil.c2.color },
+				animSpeed: g.pencil.animSpeed, animMode: g.pencil.animMode
+			}
+		});
+		for (var i = 0; i < g.children.length; i++) c.children.push(cloneGearData(g.children[i]));
+		return c;
+	}
+
+	// restore the full rosette from a symmetry save: at every level, each
+	// parent gets `n` children cloned from the level's template (its first
+	// gear), re-spread over i*TAU/n. the saved spine gear (first parent,
+	// slot 0) is kept as-is, so the original object graph survives.
+	function expandSymmetric(roots, levels) {
+		var level = roots;
+		for (var L = 0; L < levels.length; L++) {
+			var n = levels[L];
+			if (!n) return; // level emptied: everything below is gone
+			var template = null;
+			for (var t = 0; t < level.length && !template; t++)
+				if (level[t].children.length) template = level[t].children[0];
+			if (!template) return; // the file's spine ends before this level
+			var next = [];
+			for (var i = 0; i < level.length; i++) {
+				var parent = level[i];
+				parent.children.length = 0;
+				for (var k = 0; k < n; k++) {
+					var c = (i === 0 && k === 0) ? template : cloneGearData(template);
+					c.phase0 = (k * TAU) / n;
+					parent.children.push(c);
+					next.push(c);
+				}
+			}
+			level = next;
+		}
+	}
+
 	function deserialize(obj) {
 		var roots = (obj.gears || []).map(deserializeGear);
 		var view = { zoom: 1, pan: [0, 0] };
@@ -801,6 +861,10 @@
 		// sanitize/whitelist/clamp (incl. the legacy periodThreshold alias)
 		// is owned by js/settings.js - the single source of the app schema.
 		var app = Settings.sanitizeApp(obj.app || {});
+		// symmetry saves store the one-gear-per-level spine + counts; restore
+		// the full rosette BEFORE initRuntime walks the final tree.
+		var levels = sanitizeLevels(obj.levels);
+		if (levels) expandSymmetric(roots, levels);
 		for (var i = 0; i < roots.length; i++) initRuntime(roots[i], null);
 		return { roots: roots, view: view, globalSpeed: gs, colorMode: cm, app: app };
 	}

@@ -82,9 +82,15 @@
 	<script src="js/gui.js"></script>
 	<!-- startup scene + preset list: default.js sets SETTINGS (the scene that
 	     loads whenever there is no autosave) and PRESETS (the panel's preset
-	     dropdown). drop scene files saved by the app next to this file and run
-	     presets_combine.py - they are merged into default.js and the consumed
-	     files are renamed *.delete-me -->
+	     dropdown). two ways to collect presets (run the script from this dir):
+	     1. single file: presets_merge_to_default.js.py - the scene files saved
+	        next to index.html are merged into default.js and the consumed
+	        files are renamed *.delete-me.
+	     2. multi file: link_presets_to_html.py - the scene files stay where
+	        they are and are inserted below (between default.js and js/main.js)
+	        as <script ... class="preset"> tags. those tags are managed by the
+	        script: renaming or deleting a file and re-running moves or drops
+	        its tag. do not edit the class="preset" tags by hand. -->
 	<script src="default.js"></script>
 	<script src="js/main.js"></script>
 </body>

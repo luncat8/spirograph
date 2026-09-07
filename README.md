@@ -25,7 +25,9 @@ glass shader: analytical layered glass works different when circles are off - pr
 	  everything below it; new siblings deep-clone the template sub-tree;
 	  `reset levels` collapses the tree to a single chain
 	symmetry mode: context-menu edits mirror to every gear at the same level;
-	  add-sub-gear grows the whole level
+	  add-sub-gear grows the whole level; a symmetric scene SAVES as one gear
+	  per level (that level's template) plus the per-level counts, so save
+	  files stay small no matter how many copies the rosette has
 	per-gear: internal/external, speed -1..1, diameter, pencil offset d, width,
 	  two color slots (each with its own enable checkbox) -> 0 colors = no pencil,
 	  1 color = static, 2 colors = animated blend between them
@@ -62,14 +64,21 @@ glass shader: analytical layered glass works different when circles are off - pr
 	zero dependencies, WebGL2, runs from file://
 	presets: the save button writes a descriptively named scene file
 	  (`3d-tails-whole-yy-mm-dd-hh-mm-ss.js`: dimension, trail drawn, whole
-	  mode, timestamp). drop saved files next to index.html and run
-	  `presets_combine.py` from that directory: they are appended to
-	  `default.js` (preset name = file name, consumed files renamed
-	  `*.delete-me` so a second run adds nothing twice) and appear in the
-	  panel's preset dropdown above the save/load buttons. picking an entry
-	  loads the scene exactly as saved (gears, settings, dimension, camera);
-	  `default.js` still provides the startup scene whenever there is no
-	  autosave
+	  mode, timestamp). two ways to make them appear in the panel's preset
+	  dropdown (run the script from the directory holding index.html):
+	  - `presets_merge_to_default.js.py` (single file): the saved scene files
+	    are appended to `default.js` (preset name = file name, consumed files
+	    renamed `*.delete-me` so a second run adds nothing twice)
+	  - `link_presets_to_html.py` (multi file): the scene files stay where they
+	    are and are inserted into index.html as `<script>` tags between
+	    `default.js` and `js/main.js`; each file gains a `// preset: NAME.js`
+	    marker, so renaming or deleting a file and re-running moves or drops
+	    its tag. preset files append to `window.PRESETS` and never touch the
+	    startup `SETTINGS`
+	  picking a dropdown entry loads the scene exactly as saved (gears,
+	  settings, dimension, camera); opening a linked preset file via `o` loads
+	  it too. `default.js` still provides the startup scene whenever there is
+	  no autosave
 
 ### run
 
@@ -142,7 +151,11 @@ from this menu user can:
 the left panel has a `tree` section:
 
 	symmetry mode checkbox - when on, every context-menu edit above applies
-	to all sibling gears at the same level (added/removed in sync)
+	to all sibling gears at the same level (added/removed in sync); turning
+	it on commits the tree to uniform rosettes (each level = clones of its
+	first gear, re-spread), and a remove shrinks the whole level. saves made
+	while it is on store one gear per level + the per-level counts - old
+	full-format symmetric saves re-commit themselves on load
 	lvl 1..N sliders - set how many children every parent at that depth has;
 	children are positioned evenly around their parent (i * 360/N degrees).
 	the slider range starts at 0: dragging a level to 0 empties it (and every
@@ -267,15 +280,17 @@ modern browser with WebGL2 support
 	f - fit camera (3D)
 	s - copy scene model (gears, view) json to clipboard
 	d - download scene model as a descriptively named .js file
-	  (2d/3d-tails-whole-timestamp.js; presets_combine.py adds it to the
-	  preset list in default.js)
+	  (2d/3d-tails-whole-timestamp.js; presets_merge_to_default.js.py or
+	  link_presets_to_html.py make it a preset)
 	o - load scene model from file (.js or legacy .json)
 	p - load scene model from clipboard
 
 in 3D the panel shows a `3D` section: an auto-rotate-camera toggle with two
 log-scale speed sliders (`auto yaw`, `auto pitch`; 0 = that axis stays still,
 then 0.01..3 rad/s - the pitch drift bounces at the clamp instead of pinning
-at the pole) and fit / reset-camera buttons. the second rotation axis is PER
+at the pole) and fit / reset-camera buttons. the toggle and both speeds are
+persisted in the scene / autosave, so a saved 3D scene resumes its camera
+motion on load. the second rotation axis is PER
 GEAR - each gear's context menu gains a `tilt speed` slider (its own
 precession speed, 0 = stays in plane; snapped to period-friendly values in
 whole mode so the baked 3D figure closes). opening a gear menu makes the
@@ -292,8 +307,14 @@ if localStorage failed - should be 'autosave unavailable' label near save button
 
 scene saved/loaded by s / d / o / p: clipboard uses json; the file format (d)
 wraps the same object in a SETTINGS js module so a saved scene doubles as a
-preset (presets_combine.py merges it into `default.js`) or can be renamed to
-`default.js` to become the startup scene. legacy .json files still load.
+preset (presets_merge_to_default.js.py merges it into `default.js`,
+link_presets_to_html.py links the file in place) or can be renamed to
+`default.js` to become the startup scene. linked preset files use the same
+object but export it as a PRESETS entry instead of SETTINGS. a scene saved
+with symmetry on stores one gear per level (the level template) plus a
+top-level `levels` array of per-level child counts; the loader re-expands
+it, and full saves (no `levels`) load exactly as before. legacy .json files
+still load.
 colors are hex strings, parsed to rgb floats internally for webgl, example:
 
 	{
@@ -329,10 +350,16 @@ entry).
 	AGENTS.md - guidance for LLM agents
 	index.html - entry point (classic <script> tags, no build)
 	default.js - startup scene (SETTINGS) + preset list (PRESETS) for the
-	  panel dropdown; regenerated by presets_combine.py
-	presets_combine.py - merge the scene files saved in this directory into
-	  default.js's PRESETS (preset name = file name; consumed files are
-	  renamed *.delete-me). run it from the directory holding index.html
+	  panel dropdown; regenerated by presets_merge_to_default.js.py
+	presets_merge_to_default.js.py - merge the scene files saved in this
+	  directory into default.js's PRESETS (preset name = file name; consumed
+	  files are renamed *.delete-me; files linked into index.html are left
+	  alone). run it from the directory holding index.html
+	link_presets_to_html.py - the multi-file preset half: convert the
+	  scene files in this directory into preset modules (marker line +
+	  PRESETS export), insert/manage their <script class="preset"> tags in
+	  index.html, and keep the tags in sync when files are renamed or
+	  deleted. run it from the directory holding index.html
 	implementation-log.txt - what is already done and next step for LLM agents
 	findings-pitfalls-skills.md - notes for LLM agents
 	CHANGELOG.md - short release notes
