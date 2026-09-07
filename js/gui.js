@@ -596,7 +596,7 @@
 			menu.appendChild(el('div', 'help',
 				'how many points of the trail stay on screen (animate mode). whole mode ' +
 				'draws the entire closed curve - its smoothness is the sidebar detail slider. ' +
-				'works best with auto-rotate camera enabled.'));
+				'works best with "auto-rotate camera" enabled. or "bake full figure" disabled'));
 		}
 
 		// 3D: quick camera row (reframing after editing a gear is common).

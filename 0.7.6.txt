@@ -1,0 +1,16 @@
+1
+i think in symmetry mode - we can save only single gear per level to make save file smaller. if ok - implement this.
+
+2
+possible bug
+auto-camera-rotate checkbox seems not save state.
+
+3.
+we have
+presets_merge_to_default.js.py
+to merge all
+but i want also script link_presets_to_html.py to keep js and just insert them as scripts to index.html
+this script also clean and rename presets scripts in html if found the file disappears or renamed. to be able do this need after insert to html also store name of file into preset js to track renaming
+
+so we will have 2 ways so store and load presets - from single or multiple files.
+user can easy delete or rename presets 
