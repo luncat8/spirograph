@@ -1,5 +1,29 @@
 # CHANGELOG
 
+## 0.7.3 - glass shader selector (ray-traced shells), root gear always drawn
+- the **glass spheres** checkbox is replaced by a **glass shader** selector:
+  `off` / `hollow glass bubbles` / `analytic layered glass`. both are ports
+  (spheres only) of luncat8/glass-spheres-shader `hollow_bubbles` and
+  `analytic_layers`, each with its own slider rows built from a table in
+  settings.js (hollow: wall .115, ior 1.45, tint .70, iris .55, disp .35,
+  layers 6; layered: wall .045, ior 1.42, tint .55, iris .55). per-shader
+  bags persist in the app bag (`sphereShader`, `sphereParams`); a legacy
+  `spheres: true` save loads as hollow bubbles. the old wall/translucency
+  sliders are gone (wall is now per shader).
+- rendering: one full-screen analytic ray trace per frame over a world-space
+  `uBubbles vec4[]` (centre + radius) instead of one impostor quad per gear.
+  the camera ray walks every shell in exact depth order, so nested and
+  overlapping gears composite correctly and the trail layer (a framebuffer
+  copy) refracts through the whole stack. 2D uses an orthographic camera
+  matched to the pan/zoom view; 3D uses the live perspective camera.
+- **fix: 1st (root) gear missing from the shader render.** the impostor
+  pass painted parents over children with the same stale scene copy and
+  clipped the root's quad when the camera came close to or inside it, so
+  the biggest shell usually vanished. the ray trace has no quads and treats
+  an eye inside a sphere as an exit event; the root is drawn in every view.
+  gears are also fed largest-on-screen first, so when a tree exceeds the
+  shader's object budget (32 / 61) only sub-pixel leaves drop out.
+
 ## 0.7.2 - glass spheres view option
 - new "spheres" section in the sidebar view options: **glass spheres** checkbox,
   **sphere tint** color picker, **wall thickness** slider (controls the

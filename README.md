@@ -5,6 +5,18 @@ draw hypotrochoid / epitrochoid curves in the browser. no build step.
 ![screenshot](screenshot.webp)
 
 
+### TODO and notes
+
+1.
+center selected gear should be disabled by default or replaced by follow gear mechanics.
+add checkboxes (off by default):
+- follow selected gear
+- follow gear angle
+- keep angle 'selected gear'-'parent gear'-'viewport center'
+
+2.
+glass shader: analytical layered glass works different when circles are off - produce strange opaque spheres - for now count it as feature and do not plan to fix.
+
 ## features summary
 
 	interactive parent-child gear tree, add / remove sub-gears
@@ -20,14 +32,15 @@ draw hypotrochoid / epitrochoid curves in the browser. no build step.
 	  global cycles/frequency color mode (auto per trace mode, user-overridable)
 	per-pencil trail length (how much of the animate trail stays on screen;
 	  rings grow lazily) + a separate whole-mode `detail` (points per turn)
-	glass spheres view option: every gear disc is dressed in a ray-shaded
-	  glass shell (analytic impostor quad, no geometry) - Fresnel studio
-	  reflections, Beer-Lambert tint through the wall (visible glass
-	  thickness), total-internal-reflection rim, refraction of the scene
-	  behind; tint color picker + translucency slider; spheres sort far ->
-	  near and draw in two passes (far wall, trails, near wall) so trails and
-	  child spheres nested inside a parent read through its glass, in 2D
-	  and 3D alike
+	glass spheres view option: a `glass shader` selector dresses every gear
+	  in a ray-traced hollow glass shell (full-screen analytic trace, no
+	  geometry, exact depth order - nested gears and a camera inside a shell
+	  just work). two shaders, each with its own slider set (ports of
+	  luncat8/glass-spheres-shader, spheres only): `hollow glass bubbles`
+	  (membrane wall traced through up to 10 layers, Fresnel, Beer-Lambert
+	  tint, thin-film iridescence, dispersion) and `analytic layered glass`
+	  (nearest three shells composited); plus a sphere tint color picker.
+	  the scene behind the glass (trails) refracts through the shells
 	whole-curve mode with tolerance-based period detection, background
 	  (time-sliced) baking with a progress readout, and sliders that only stop
 	  on period-friendly values; `max period` sets the search ceiling

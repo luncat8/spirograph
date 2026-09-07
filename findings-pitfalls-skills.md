@@ -229,3 +229,26 @@
   contributions (Fresnel reflection strength, absorption) and lerp the
   transmission toward straight-through - not fade the final alpha, which
   reintroduces the double image above.
+
+## glass shader pass (0.7.3)
+- the sphere pass is a full-screen ray trace over a uniform vec4 array, not
+  per-gear quads. anything that draws "one impostor per object" over a
+  shared framebuffer copy breaks when objects nest: the later (parent) draw
+  replaces the earlier child with a sample taken BEFORE the child was drawn,
+  and a quad is clipped as soon as the eye enters the sphere. that was the
+  "1st gear invisible" bug.
+- 2D shells must sit exactly on the guide circles: use an ORTHOGRAPHIC
+  camera whose world half-width is cx0 / S (S = px per world unit) centred
+  on -pan; a tilted perspective camera in 2D drifts the silhouettes.
+- world sphere centre in 2D is (g.cx, g.cy); the y flip happens only when
+  projecting to pixels, so the ray tracer's up axis is +y world (matches
+  gl_FragCoord's bottom-left origin - no flip anywhere in the shader).
+- feed the array largest-on-screen first: the shaders read a bounded prefix
+  (32 hollow / 61 layers), so over-budget trees lose sub-pixel leaves only.
+- Beer-Lambert in the ports is normalised by the wall thickness
+  (chord / (wall * R)) so the tint slider means the same thing for a gear
+  of radius 0.06 and one of radius 0.6.
+- headless GL in this sandbox: puppeteer's Chrome CDN is blocked, but
+  @sparticuz/chromium ships a binary in the npm tarball; extract its
+  al2023.tar.br libs and run with LD_LIBRARY_PATH=<libs>:/tmp and
+  --use-angle=swiftshader.

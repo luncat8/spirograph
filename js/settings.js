@@ -34,6 +34,68 @@
 		return Math.max(lo, Math.min(L.max, x));
 	}
 
+	// ---- glass sphere shaders ------------------------------------------
+	// selector id -> label + per-shader slider table (min/max/step/def). the
+	// GUI builds one slider row per param of the selected shader, main.js
+	// feeds the bag to the matching fragment program (render.js). the
+	// defaults are the reference presets from luncat8/glass-spheres-shader.
+	var SPHERE_SHADERS = {
+		off: { label: 'off', params: {} },
+		hollow: {
+			label: 'hollow glass bubbles',
+			params: {
+				wall: { min: 0.005, max: 0.5, step: 0.005, def: 0.115 },
+				ior: { min: 1.0, max: 2.0, step: 0.01, def: 1.45 },
+				tint: { min: 0.0, max: 3.0, step: 0.05, def: 0.70 },
+				iris: { min: 0.0, max: 1.0, step: 0.05, def: 0.55 },
+				disp: { min: 0.0, max: 1.0, step: 0.05, def: 0.35 },
+				layers: { min: 1, max: 10, step: 1, def: 6 }
+			}
+		},
+		layers: {
+			label: 'analytic layered glass',
+			params: {
+				wall: { min: 0.005, max: 0.25, step: 0.005, def: 0.045 },
+				ior: { min: 1.0, max: 2.0, step: 0.01, def: 1.42 },
+				tint: { min: 0.0, max: 3.0, step: 0.05, def: 0.55 },
+				iris: { min: 0.0, max: 1.0, step: 0.05, def: 0.55 }
+			}
+		}
+	};
+	var SPHERE_SHADER_IDS = ['off', 'hollow', 'layers'];
+
+	function clampSphereParam(shader, key, v) {
+		var L = SPHERE_SHADERS[shader].params[key];
+		if (typeof v !== 'number' || !isFinite(v)) return L.def;
+		return Math.max(L.min, Math.min(L.max, v));
+	}
+
+	// fresh { shader: { key: def } } bag for every shader that has sliders.
+	function sphereDefaults() {
+		var out = {};
+		for (var i = 0; i < SPHERE_SHADER_IDS.length; i++) {
+			var id = SPHERE_SHADER_IDS[i], P = SPHERE_SHADERS[id].params, bag = {};
+			for (var k in P) bag[k] = P[k].def;
+			out[id] = bag;
+		}
+		return out;
+	}
+
+	// coerce a loaded bag: unknown shaders / keys dropped, missing ones at
+	// their defaults, values clamped.
+	function sanitizeSphereParams(v) {
+		var d = sphereDefaults();
+		if (!v || typeof v !== 'object') return d;
+		for (var id in d) {
+			var src = v[id];
+			if (!src || typeof src !== 'object') continue;
+			for (var k in d[id]) {
+				if (typeof src[k] === 'number') d[id][k] = clampSphereParam(id, k, src[k]);
+			}
+		}
+		return d;
+	}
+
 	// coerce a loaded flag to a real boolean. default-on fields stay ON for
 	// every value except an explicit false / 0 (matches the old loader, which
 	// only honored an actual boolean and treated numeric 0 as off).
@@ -152,10 +214,15 @@
 		// glass sphere shells over the gear discs (view-only option; spheres
 		// draw live every frame, so no overlay re-bake is needed).
 		{
-			key: 'spheres', def: false, persist: true,
-			get: function (A) { return A.spheres; },
-			clean: function (v) { return boolOff(v); },
-			apply: function (s, A, GUI) { A.spheres = s.spheres; GUI.setSpheres(s.spheres); A.markDirty(); }
+			key: 'sphereShader', def: 'off', persist: true,
+			get: function (A) { return A.sphereShader; },
+			clean: function (v, s) {
+				if (SPHERE_SHADERS[v]) return v;
+				// legacy 0.7.2 bag: boolean `spheres` toggle
+				if (s && (s.spheres === true || s.spheres === 1)) return 'hollow';
+				return undefined;
+			},
+			apply: function (s, A, GUI) { A.sphereShader = s.sphereShader; GUI.setSphereShader(s.sphereShader); A.markDirty(); }
 		},
 		{
 			key: 'sphereColor', def: '#9fd8ff', persist: true,
@@ -166,22 +233,14 @@
 			apply: function (s, A, GUI) { A.sphereColor = s.sphereColor; GUI.setSphereColor(s.sphereColor); A.markDirty(); }
 		},
 		{
-			key: 'sphereTrans', def: 0.25, persist: true,
-			get: function (A) { return A.sphereTrans; },
-			clean: function (v) {
-				if (typeof v !== 'number' || !isFinite(v)) return undefined;
-				return Math.max(0, Math.min(1, v));
-			},
-			apply: function (s, A, GUI) { A.sphereTrans = s.sphereTrans; GUI.setSphereTrans(s.sphereTrans); A.markDirty(); }
-		},
-		{
-			key: 'sphereWall', def: 0.16, persist: true,
-			get: function (A) { return A.sphereWall; },
-			clean: function (v) {
-				if (typeof v !== 'number' || !isFinite(v)) return undefined;
-				return Math.max(0.02, Math.min(0.5, v));
-			},
-			apply: function (s, A, GUI) { A.sphereWall = s.sphereWall; GUI.setSphereWall(s.sphereWall); A.markDirty(); }
+			// per-shader slider bags: { hollow: {wall, ior, ...}, layers: {...} }.
+			// the default getter hands out a FRESH bag each call, so applyApp's
+			// identity skip never fires for this field (alwaysApply).
+			key: 'sphereParams', persist: true, alwaysApply: true,
+			get def() { return sphereDefaults(); },
+			get: function (A) { return A.sphereParams; },
+			clean: function (v) { return sanitizeSphereParams(v); },
+			apply: function (s, A, GUI) { A.sphereParams = s.sphereParams; GUI.setSphereParams(s.sphereParams); A.markDirty(); }
 		}
 	];
 
@@ -232,6 +291,11 @@
 		LIMITS: LIMITS,
 		APP_SCHEMA: APP_SCHEMA,
 		clamp: clamp,
+		SPHERE_SHADERS: SPHERE_SHADERS,
+		SPHERE_SHADER_IDS: SPHERE_SHADER_IDS,
+		clampSphereParam: clampSphereParam,
+		sphereDefaults: sphereDefaults,
+		sanitizeSphereParams: sanitizeSphereParams,
 		defaultApp: defaultApp,
 		sanitizeApp: sanitizeApp,
 		snapshotApp: snapshotApp,

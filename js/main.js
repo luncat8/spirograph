@@ -47,10 +47,9 @@
 		showPoints: false,
 		glowPoints: false,
 		drawTrails: false,
-		spheres: false,
+		sphereShader: 'off',
 		sphereColor: '#9fd8ff',
-		sphereTrans: 0.25,
-		sphereWall: 0.16
+		sphereParams: Settings.sphereDefaults()   // per-shader slider bags
 	};
 
 	var TAU = Math.PI * 2;
@@ -535,20 +534,24 @@
 	App.setShowPoints = function (v) { App.showPoints = v; markDirty(); };
 	App.setGlow = function (v) { App.glowPoints = v; markDirty(); };
 	// glass sphere shells (view-only; drawn live each render, no overlay bake).
-	App.setSpheres = function (v) { App.spheres = !!v; markDirty(); };
+	// sphereShader selects the ray tracer ('off' | 'hollow' | 'layers');
+	// each shader keeps its own slider bag in App.sphereParams[shader].
+	App.setSphereShader = function (v) {
+		if (!Settings.SPHERE_SHADERS[v]) return;
+		App.sphereShader = v; markDirty();
+	};
 	App.setSphereColor = function (v) {
 		if (typeof v !== 'string' || !/^#[0-9a-fA-F]{6}$/.test(v)) return;
 		App.sphereColor = v.toLowerCase(); markDirty();
 	};
-	App.setSphereTrans = function (v) {
-		v = Math.max(0, Math.min(1, +v));
-		if (!isFinite(v) || v === App.sphereTrans) return;
-		App.sphereTrans = v; markDirty();
-	};
-	App.setSphereWall = function (v) {
-		v = Math.max(SPH_WALL_MIN, Math.min(SPH_WALL_MAX, +v));
-		if (!isFinite(v) || v === App.sphereWall) return;
-		App.sphereWall = v; markDirty();
+	// one slider of the CURRENT shader's bag (key: wall/ior/tint/iris/disp/layers)
+	App.setSphereParam = function (key, v) {
+		var bag = App.sphereParams && App.sphereParams[App.sphereShader];
+		var lim = Settings.SPHERE_SHADERS[App.sphereShader];
+		if (!bag || !lim || !lim.params[key]) return;
+		v = Settings.clampSphereParam(App.sphereShader, key, +v);
+		if (!isFinite(v) || v === bag[key]) return;
+		bag[key] = v; markDirty();
 	};
 
 	// mode-appropriate default for the GLOBAL color mode. 'frequency' (hue/sec)
@@ -1772,27 +1775,30 @@
 	}
 
 	// ---- glass sphere pass (shared by 2D and 3D) ----------------------------
-	// every gear is drawn as a ray-shaded glass shell impostor (see render.js).
-	// occlusion is painter + blend: spheres are sorted far -> near each render
-	// (3D: camera depth; 2D: radius, so parents paint under the children
-	// mounted inside them) and shaded in two passes - far shell before the
-	// trail layer, near shell after it - so trails and child spheres inside a
-	// parent read through its glass. a sphere's trail strand crossing depth
-	// layers is not depth-tested (the trail vertex stream has no z), which is
-	// fine for glass: "in front" vs "inside" differ only by one wall's tint.
-	var SPH_WALL_MIN = 0.02;
-	var SPH_WALL_MAX = 0.5;
-	var sphKeys = new Float32Array(MAX_GEARS);   // sort keys (far -> near desc)
-	var sphCx = new Float32Array(MAX_GEARS);
-	var sphCy = new Float32Array(MAX_GEARS);
-	var sphRad = new Float32Array(MAX_GEARS);
+	// every gear is a world-space sphere handed to a full-screen analytic ray
+	// tracer (see render.js: two selectable shaders). the pass runs ONCE per
+	// render, after the trail layer: the shader grabs the framebuffer, casts
+	// the camera ray through the shells in exact depth order (nested,
+	// overlapping, or with the camera inside a sphere - no sorting, no
+	// impostor quads) and composites the refracted scene copy behind the glass.
+	// the old impostor pass painted parents over children with the same scene
+	// copy and clipped the root's quad whenever the camera sat close to or
+	// inside it - the "first gear invisible" bug. a ray hitting a sphere from
+	// the inside (entry behind the eye) is just an exit event here.
+	var SPH_MAX_SHIFT_PX = 3;                // refraction sample shift cap (css px)
+	var sphKeys = new Float32Array(MAX_GEARS);   // projected radius (sort desc)
 	var sphOrder = [];                      // permutation over the sorted keys
 	var sphValid = 0;                        // spheres batched this render
 	var sphEye = [0, 0, 0];
-	var sphBasis = { right: new Float32Array(3), up: new Float32Array(3), out: new Float32Array(3) };
+	var sphCam = { camPos: new Float32Array(3), camRt: new Float32Array(3), camUp: new Float32Array(3), camFw: new Float32Array(3) };
 	var sphTint = new Float32Array([0.62, 0.85, 1.0]);
 	var sphTintParsed = '';
-	var sphUniforms = { right: sphBasis.right, up: sphBasis.up, out: sphBasis.out, tint: sphTint, opac: 0, wall: 0.16, pass: 0 };
+	var sphUniforms = {
+		shader: 'hollow',
+		camPos: sphCam.camPos, camRt: sphCam.camRt, camUp: sphCam.camUp, camFw: sphCam.camFw,
+		focal: 1, ortho: 0, bgDist: 1, maxShift: 3, tint: sphTint,
+		wall: 0.1, ior: 1.45, density: 0.7, irid: 0.5, disp: 0.3, layers: 6, time: 0
+	};
 
 	function sphCmp(a, b) { return sphKeys[b] - sphKeys[a]; }
 
@@ -1804,71 +1810,82 @@
 		sphTint[2] = parseInt(sphTintParsed.substr(5, 2), 16) / 255;
 	}
 
+	// the largest on-screen spheres go first: the shaders read a bounded
+	// prefix of the array (32 / 61), so when a tree exceeds it the ones that
+	// vanish are the sub-pixel leaves, never the root.
 	function collectSpheres(is3) {
 		R.sphReset();
 		sphValid = 0;
 		parseSphTint();
-		var bx = sphBasis.right, by = sphBasis.up, bo = sphBasis.out;
+		var P = sphCam.camPos, bx = sphCam.camRt, by = sphCam.camUp, bf = sphCam.camFw;
 		var n = Math.min(App.allGears.length, MAX_GEARS);
-		var i, g, rp;
+		var i, g;
 		if (is3) {
 			var eye = Camera3.eyeOf(App.cam, sphEye);
 			var t = App.cam.target;
 			var fx = t[0] - eye[0], fy = t[1] - eye[1], fz = t[2] - eye[2];
 			var fl = Math.hypot(fx, fy, fz) || 1; fx /= fl; fy /= fl; fz /= fl;
 			// camera basis in world (same construction as mat4LookAt):
-			// right = normalize(f x worldUp), up = right x f, out = -f.
+			// right = normalize(f x worldUp), up = right x f.
 			var rx = fy, ry = -fx, rr = Math.hypot(rx, ry) || 1; rx /= rr; ry /= rr;
 			var ux = ry * fz, uy = -rx * fz, uz = rx * fy - ry * fx;
+			P[0] = eye[0]; P[1] = eye[1]; P[2] = eye[2];
 			bx[0] = rx; bx[1] = ry; bx[2] = 0;
 			by[0] = ux; by[1] = uy; by[2] = uz;
-			bo[0] = -fx; bo[1] = -fy; bo[2] = -fz;
+			bf[0] = fx; bf[1] = fy; bf[2] = fz;
+			sphUniforms.focal = 1 / Math.tan(Camera3.FOVY / 2);
+			sphUniforms.ortho = 0;
+			sphUniforms.bgDist = App.cam.dist;
 			for (i = 0; i < n; i++) {
 				g = App.allGears[i];
 				sphOrder[i] = i;
-				var c = w2s3DC(g.c3[0], g.c3[1], g.c3[2]);
-				var rim = w2s3D(g.c3[0] + rx * g.r, g.c3[1] + ry * g.r, g.c3[2]);
-				rp = Math.hypot(rim.x - c.x, rim.y - c.y);
-				sphCx[i] = c.x; sphCy[i] = c.y; sphRad[i] = rp;
-				sphKeys[i] = rp >= 0.75 ? (fx * (g.c3[0] - eye[0]) + fy * (g.c3[1] - eye[1]) + fz * (g.c3[2] - eye[2])) : -1e30;
+				var dz = fx * (g.c3[0] - eye[0]) + fy * (g.c3[1] - eye[1]) + fz * (g.c3[2] - eye[2]);
+				sphKeys[i] = g.r / Math.max(Math.abs(dz), 1e-3);
 			}
 		} else {
-			// 2D: the flat figure sits in the virtual XZ plane; view it from a
-			// slightly raised angle so the glass highlights sit naturally.
-			bx[0] = 1; bx[1] = 0; bx[2] = 0;
-			by[0] = 0; by[1] = 0; by[2] = 1;
-			var oi = 1 / Math.hypot(1.35, 0.45);
-			bo[0] = 0; bo[1] = -1.35 * oi; bo[2] = 0.45 * oi;
+			// 2D: the flat figure lies in the world XY plane (z = 0), viewed
+			// straight down by an orthographic camera whose window is exactly
+			// the canvas view (pan + zoom), so the shells sit on the circles.
 			var panX = App.view.pan[0], panY = App.view.pan[1];
-			var S = App.S, cx0 = App.cx0, cy0 = App.cy0;
+			var halfW = App.cx0 / App.S;      // world half-width of the view
+			P[0] = -panX; P[1] = -panY; P[2] = 4;
+			bx[0] = 1; bx[1] = 0; bx[2] = 0;
+			by[0] = 0; by[1] = 1; by[2] = 0;
+			bf[0] = 0; bf[1] = 0; bf[2] = -1;
+			sphUniforms.focal = 1;
+			sphUniforms.ortho = halfW;
+			sphUniforms.bgDist = 4;
 			for (i = 0; i < n; i++) {
 				g = App.allGears[i];
 				sphOrder[i] = i;
-				rp = g.r * S;
-				sphCx[i] = cx0 + (g.cx + panX) * S;
-				sphCy[i] = cy0 - (g.cy + panY) * S;
-				sphRad[i] = rp;
-				sphKeys[i] = rp >= 0.75 ? g.r : -1e30;
+				sphKeys[i] = g.r;
 			}
 		}
 		sphOrder.length = n;
 		sphOrder.sort(sphCmp);
 		for (i = 0; i < n; i++) {
 			var gi = sphOrder[i];
-			if (sphKeys[gi] <= -1e29) break;   // sub-pixel spheres stay 2D outlines
-			R.sphPush(sphCx[gi], sphCy[gi], sphRad[gi]);
+			g = App.allGears[gi];
+			if (is3) R.sphPush(g.c3[0], g.c3[1], g.c3[2], g.r);
+			else R.sphPush(g.cx, g.cy, 0, g.r);
 			sphValid++;
 		}
 	}
 
-	// one shell pass: re-grabs the scene texture (the caller draws the trail
-	// layer between the far and near passes, so the near shell refracts it).
-	function drawSpherePass(pass) {
-		if (!App.spheres || !sphValid) return;
+	// the glass pass: grab what is drawn so far, trace the shells over it.
+	function drawSpherePass() {
+		if (App.sphereShader === 'off' || !sphValid) return;
+		var bag = App.sphereParams[App.sphereShader];
 		R.sphGrab();
-		sphUniforms.opac = 1 - App.sphereTrans;
-		sphUniforms.wall = SPH_WALL_MIN + App.sphereWall * (SPH_WALL_MAX - SPH_WALL_MIN);
-		sphUniforms.pass = pass;
+		sphUniforms.shader = App.sphereShader;
+		sphUniforms.maxShift = SPH_MAX_SHIFT_PX * App.dpr;
+		sphUniforms.wall = bag.wall;
+		sphUniforms.ior = bag.ior;
+		sphUniforms.density = bag.tint;
+		sphUniforms.irid = bag.iris;
+		sphUniforms.disp = bag.disp != null ? bag.disp : 0;
+		sphUniforms.layers = bag.layers != null ? bag.layers : 3;
+		sphUniforms.time = nowMs() / 1000;
 		R.sphDraw(sphUniforms);
 	}
 
@@ -2008,20 +2025,18 @@
 			// do not chase the moving gear here or the baked trail desyncs.
 			Camera3.viewProj(matM, App.cam, App.size * App.dpr, App.size * App.dpr);
 		}
-		var sphereOn = App.spheres;
+		var sphereOn = App.sphereShader !== 'off';
 		if (sphereOn) collectSpheres(is3);
 		if (!App.drawTrails) {                 // trail hidden: skeleton + points only
 			R.begin(BG);
-			drawSpherePass(0);
-			drawSpherePass(1);
+			drawSpherePass();
 			drawGuides(is3);
 			return;
 		}
 		if (isGestureActive()) {               // gesture: direct draw at the live view
 			R.begin(BG);
-			drawSpherePass(0);
 			drawTrailsDirect(is3, is3 ? GESTURE_SEG_BUDGET_3D : GESTURE_SEG_BUDGET);
-			drawSpherePass(1);
+			drawSpherePass();
 			drawGuides(is3);
 			return;
 		}
@@ -2038,18 +2053,16 @@
 			}
 			R.overlay.unbind();
 			R.begin(BG);
-			drawSpherePass(0);
 			R.overlay.blitToScreen();
 			drawTrailTips(is3);
 			if (sphereOn) Rflush();            // tips must be pixels before the grab
-			drawSpherePass(1);
+			drawSpherePass();
 			drawGuides(is3);
 			return;
 		}
 		R.begin(BG);                           // redraw mode: full trail every render
-		drawSpherePass(0);
 		drawTrailsDirect(is3, 0);
-		drawSpherePass(1);
+		drawSpherePass();
 		drawGuides(is3);
 	}
 

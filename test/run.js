@@ -246,8 +246,9 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	for (var i = 0; i < Settings.APP_SCHEMA.length; i++) {
 		var f = Settings.APP_SCHEMA[i];
 		if (!f.persist) continue;
-		if (f.get(App) === d[f.key]) matched++;
-		else ok(false, 'live App.' + f.key + ' seeded from schema default', f.get(App) + ' vs ' + d[f.key]);
+		// object-valued fields (sphereParams) compare by value
+		if (JSON.stringify(f.get(App)) === JSON.stringify(d[f.key])) matched++;
+		else ok(false, 'live App.' + f.key + ' seeded from schema default', JSON.stringify(f.get(App)) + ' vs ' + JSON.stringify(d[f.key]));
 	}
 	ok(matched === Settings.APP_SCHEMA.length, 'live App seeded from Settings defaults (' + matched + ' fields)');
 })();
@@ -983,54 +984,74 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 // ---- glass spheres -----------------------------------------------------
 (function glassSpheres() {
 	var d = Settings.defaultApp();
-	ok(d.spheres === false && d.sphereColor === '#9fd8ff', 'sphere defaults live in the schema', JSON.stringify([d.spheres, d.sphereColor]));
-	ok(Math.abs(d.sphereTrans - 0.25) < 1e-12, 'translucency default is 0.25', d.sphereTrans);
-	ok(Math.abs(d.sphereWall - 0.16) < 1e-12, 'wall thickness default is 0.16', d.sphereWall);
-	Settings.applyApp({ spheres: true, sphereColor: '#FF8800', sphereTrans: 2, sphereWall: 99 }, App, w.GUI);
-	ok(App.spheres === true, 'sphere toggle applies to the live app');
+	ok(d.sphereShader === 'off' && d.sphereColor === '#9fd8ff', 'sphere defaults live in the schema', JSON.stringify([d.sphereShader, d.sphereColor]));
+	var hb = d.sphereParams.hollow, al = d.sphereParams.layers;
+	ok(hb && Math.abs(hb.wall - 0.115) < 1e-12 && hb.ior === 1.45 && hb.tint === 0.7 && hb.iris === 0.55 && hb.disp === 0.35 && hb.layers === 6,
+		'hollow bubbles preset (wall .115 ior 1.45 tint .7 iris .55 disp .35 layers 6)', JSON.stringify(hb));
+	ok(al && Math.abs(al.wall - 0.045) < 1e-12 && al.ior === 1.42 && al.tint === 0.55 && al.iris === 0.55 && al.disp === undefined,
+		'analytic layers preset (wall .045 ior 1.42 tint .55 iris .55, no disp/layers)', JSON.stringify(al));
+	ok(Settings.defaultApp().sphereParams !== d.sphereParams, 'sphereParams default is a fresh bag per call');
+	Settings.applyApp({ sphereShader: 'layers', sphereColor: '#FF8800', sphereParams: { layers: { wall: 99, ior: 'x' }, bogus: { wall: 1 } } }, App, w.GUI);
+	ok(App.sphereShader === 'layers', 'shader selector applies to the live app', App.sphereShader);
 	ok(App.sphereColor === '#ff8800', 'sphere tint sanitizes to lowercase hex', App.sphereColor);
-	ok(App.sphereTrans === 1, 'translucency clamps into 0..1', App.sphereTrans);
-	ok(App.sphereWall === 0.5, 'wall thickness clamps into 0.02..0.5', App.sphereWall);
-	Settings.applyApp({ sphereColor: 'red', sphereTrans: 'lots', sphereWall: 'lots' }, App, w.GUI);
-	ok(App.sphereColor === '#9fd8ff' && Math.abs(App.sphereTrans - 0.25) < 1e-12 && Math.abs(App.sphereWall - 0.16) < 1e-12,
+	ok(App.sphereParams.layers.wall === 0.25 && App.sphereParams.layers.ior === 1.42, 'per-shader params clamp / default per key', JSON.stringify(App.sphereParams.layers));
+	ok(!App.sphereParams.bogus, 'unknown shader bags are dropped');
+	Settings.applyApp({ sphereShader: 'cubes', sphereColor: 'red', sphereParams: 7 }, App, w.GUI);
+	ok(App.sphereShader === 'off' && App.sphereColor === '#9fd8ff' && App.sphereParams.hollow.layers === 6,
 		'bad sphere values fall back to the schema defaults');
-	// panel rows (checkbox + color picker + sliders)
-	var txt = '';
-	(function walk(n) {
-		if (n.textContent) txt += '|' + n.textContent;
-		for (var i = 0; i < (n.children || []).length; i++) walk(n.children[i]);
-	})(w.byId.panel);
-	ok(txt.indexOf('glass spheres') >= 0, 'panel has the sphere toggle');
+	ok(Settings.sanitizeApp({ spheres: true }).sphereShader === 'hollow', 'legacy 0.7.2 boolean toggle maps to hollow bubbles');
+	ok(Settings.sanitizeApp({ spheres: false }).sphereShader === 'off', 'legacy toggle off stays off');
+	// panel rows (select + color picker + per-shader sliders)
+	function panelText() {
+		var txt = '';
+		(function walk(n) {
+			if (n.textContent) txt += '|' + n.textContent;
+			for (var i = 0; i < (n.children || []).length; i++) walk(n.children[i]);
+		})(w.byId.panel);
+		return txt;
+	}
+	var txt = panelText();
+	ok(txt.indexOf('glass shader') >= 0, 'panel has the shader selector');
+	ok(txt.indexOf('hollow glass bubbles') >= 0 && txt.indexOf('analytic layered glass') >= 0, 'selector lists both shaders');
 	ok(txt.indexOf('sphere tint') >= 0, 'panel has the sphere tint color picker');
-	ok(txt.indexOf('translucency') >= 0, 'panel has the translucency slider');
-	ok(txt.indexOf('wall thickness') >= 0, 'panel has the wall thickness slider');
-	// render frames with spheres on, 2D and 3D (must not throw / break trails)
-	Settings.applyApp({ spheres: true, sphereTrans: 0.4 }, App, w.GUI);
+	ok(txt.indexOf('|wall ') < 0, 'shader off: no slider rows', txt);
+	App.setSphereShader('hollow'); w.GUI.setSphereShader('hollow');
+	txt = panelText();
+	ok(txt.indexOf('|wall ') >= 0 && txt.indexOf('|disp ') >= 0 && txt.indexOf('|layers ') >= 0, 'hollow bubbles: wall/ior/tint/iris/disp/layers rows', txt);
+	App.setSphereShader('layers'); w.GUI.setSphereShader('layers');
+	txt = panelText();
+	ok(txt.indexOf('|iris ') >= 0 && txt.indexOf('|disp ') < 0 && txt.indexOf('|layers ') < 0, 'analytic layers: no disp/layers rows', txt);
+	// render frames with each shader on, 2D and 3D (must not throw / break trails)
+	Settings.applyApp({ sphereShader: 'hollow' }, App, w.GUI);
 	w.tick(150, 16);
 	ok(App.allGears[1].count > 100, '2D trail keeps growing with spheres on', App.allGears[1].count);
 	App.setDim('3d');
 	w.tick(150, 16);
 	ok(App.allGears[1].count > 100, '3D trail keeps growing with spheres on', App.allGears[1].count);
-	// transient state: translucency / tint / wall mid-flight through the setters
+	App.setSphereShader('layers');
+	w.tick(20, 16);
+	App.setDim('2d');
+	w.tick(20, 16);
+	// transient state through the setters
 	App.setSphereColor('#3366ff');
-	App.setSphereTrans(0.6);
-	App.setSphereWall(0.3);
+	App.setSphereParam('wall', 0.2);
+	App.setSphereParam('disp', 0.5);            // not a layers param: ignored
+	App.setSphereShader('hollow');
+	App.setSphereParam('disp', 0.5);
 	w.tick(10, 16);
-	ok(App.sphereColor === '#3366ff' && Math.abs(App.sphereTrans - 0.6) < 1e-12 && Math.abs(App.sphereWall - 0.3) < 1e-12,
-		'sphere setters drive the live app');
+	ok(App.sphereColor === '#3366ff' && App.sphereParams.layers.wall === 0.2 && App.sphereParams.layers.disp === undefined && App.sphereParams.hollow.disp === 0.5,
+		'sphere setters drive the live app (params are per shader)', JSON.stringify(App.sphereParams));
 	// persisted through the app bag (autosave), restored to defaults
 	App.markDirty(); w.flushTimers(1000);
 	var stored = JSON.parse(w.localStorage._d['spiro.autosave.v1']);
-	ok(stored.app.spheres === true, 'sphere toggle autosaves in the app bag');
-	ok(Math.abs(stored.app.sphereTrans - 0.6) < 1e-9, 'translucency autosaves', stored.app.sphereTrans);
-	ok(Math.abs(stored.app.sphereWall - 0.3) < 1e-9, 'wall thickness autosaves', stored.app.sphereWall);
+	ok(stored.app.sphereShader === 'hollow', 'shader selection autosaves in the app bag');
+	ok(stored.app.sphereParams.layers.wall === 0.2 && stored.app.sphereParams.hollow.disp === 0.5, 'per-shader params autosave', JSON.stringify(stored.app.sphereParams));
 	ok(stored.app.sphereColor === '#3366ff', 'sphere tint autosaves');
 	Settings.applyApp(Settings.defaultApp(), App, w.GUI);
-	ok(App.spheres === false && App.sphereColor === '#9fd8ff' && Math.abs(App.sphereWall - 0.16) < 1e-12, 'restore-defaults applies the sphere schema');
-	App.setDim('2d');
+	ok(App.sphereShader === 'off' && App.sphereColor === '#9fd8ff' && App.sphereParams.layers.wall === 0.045, 'restore-defaults applies the sphere schema');
 	App.resetScene();
 	w.tick(5, 16);
-	ok(App.spheres === false, 'full scene reset leaves spheres off');
+	ok(App.sphereShader === 'off', 'full scene reset leaves spheres off');
 })();
 
 console.log((fail ? 'FAILED' : 'OK') + ': ' + pass + ' passed, ' + fail + ' failed');

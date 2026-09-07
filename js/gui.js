@@ -23,6 +23,9 @@
 	var checkboxRefs = {};
 	var sliderRefs = {};   // dit for range inputs
 	var colorRefs = {};    // dit for color inputs (sphere tint etc.)
+	var selectRefs = {};   // dit for <select> inputs (glass shader)
+	var sphereHost = null; // glass shader slider rows host
+	var sphereRows = {};   // param key -> slider row of the selected shader
 	// reference into the open per-gear menu so refreshAnimMode() can relabel the
 	// anim-speed slider prefix after the global color mode changes.
 	var speedLabRefresh = null;
@@ -112,6 +115,42 @@
 		wrap.appendChild(inp);
 		if (key) colorRefs[key] = inp;
 		return wrap;
+	}
+
+	// a <select> row over a list of ids; labelOf(id) -> option text.
+	function selectRow(label, ids, labelOf, value, onChange, key) {
+		var wrap = el('div', 'row');
+		var lab = el('label', null, label + ' ');
+		var sel = document.createElement('select');
+		for (var i = 0; i < ids.length; i++) {
+			var opt = document.createElement('option');
+			opt.value = ids[i];
+			opt.textContent = labelOf(ids[i]);
+			sel.appendChild(opt);
+		}
+		sel.value = value;
+		sel.addEventListener('change', function () { onChange(sel.value); });
+		lab.appendChild(sel);
+		wrap.appendChild(lab);
+		if (key) selectRefs[key] = sel;
+		return wrap;
+	}
+
+	// slider rows of the selected glass shader (one per param in its table).
+	// rebuilt on selection; values sync through setSphereParams.
+	function rebuildSphereRows() {
+		if (!sphereHost) return;
+		sphereHost.innerHTML = '';
+		sphereRows = {};
+		var id = app.sphereShader;
+		var P = Settings.SPHERE_SHADERS[id].params;
+		var bag = app.sphereParams[id];
+		Object.keys(P).forEach(function (k) {
+			var L = P[k];
+			var row = sliderRow(k, L.min, L.max, L.step, bag[k], function (v) { app.setSphereParam(k, v); });
+			sphereRows[k] = row;
+			sphereHost.appendChild(row);
+		});
 	}
 
 	function colorCheckRow(label, checkVal, colorVal, onCheck, onColor) {
@@ -252,16 +291,21 @@
 		panel.appendChild(el('div', 'help',
 			'Uncheck "draw trail" to hide the traced curve (points-only view).'));
 
-		// glass sphere shells over the gear discs (fake ray-shaded impostors;
-		// drawn in 2D and 3D alike, sorted far -> near into two shell passes).
+		// glass sphere shells over the gear discs: a selector picks the ray
+		// tracer (render.js), the slider rows below it are rebuilt per shader
+		// from Settings.SPHERE_SHADERS (each shader keeps its own bag).
 		panel.appendChild(el('div', 'sub', 'spheres'));
-		panel.appendChild(checkboxRow('glass spheres', app.spheres, function (v) { app.setSpheres(v); }, 'spheres'));
+		panel.appendChild(selectRow('glass shader', Settings.SPHERE_SHADER_IDS, function (id) {
+			return Settings.SPHERE_SHADERS[id].label;
+		}, app.sphereShader, function (v) { app.setSphereShader(v); rebuildSphereRows(); }, 'sphereShader'));
 		panel.appendChild(colorRow('sphere tint', app.sphereColor, function (v) { app.setSphereColor(v); }, 'sphereColor'));
-		panel.appendChild(sliderRow('wall thickness', 0.02, 0.5, 0.01, app.sphereWall, function (v) { app.setSphereWall(v); }, null, 'sphereWall'));
-		panel.appendChild(sliderRow('translucency', 0, 1, 0.01, app.sphereTrans, function (v) { app.setSphereTrans(v); }, null, 'sphereTrans'));
+		sphereHost = el('div', 'levels');
+		panel.appendChild(sphereHost);
+		rebuildSphereRows();
 		panel.appendChild(el('div', 'help',
-			'Ray-shaded glass shells on every gear. tint colors the glass; ' +
-			'translucency fades the shells (1 = invisible).'));
+			'Ray-traced glass shells on every gear. hollow bubbles: membrane wall, ' +
+			'iridescence, dispersion, see-through depth (layers). layered glass: ' +
+			'nearest three shells composited.'));
 
 		// gear tree: level sliders grow every parent at a depth by the same
 		// child count, radially spaced; symmetry mirrors menu edits per level.
@@ -545,15 +589,19 @@
 		setShowPoints: function (v) { if (checkboxRefs.showPoints) checkboxRefs.showPoints.checked = v; },
 		setGlow: function (v) { if (checkboxRefs.glowPoints) checkboxRefs.glowPoints.checked = v; },
 		setDrawTrails: function (v) { if (checkboxRefs.drawTrails) checkboxRefs.drawTrails.checked = v; },
-		setSpheres: function (v) { if (checkboxRefs.spheres) checkboxRefs.spheres.checked = v; },
-		setSphereColor: function (v) { if (colorRefs.sphereColor) colorRefs.sphereColor.value = v; },
-		setSphereTrans: function (v) {
-			var r = sliderRefs.sphereTrans; if (!r) return;
-			r.input.value = v; r.val.textContent = fmt(v);
+		setSphereShader: function (v) {
+			if (selectRefs.sphereShader) selectRefs.sphereShader.value = v;
+			rebuildSphereRows();
 		},
-		setSphereWall: function (v) {
-			var r = sliderRefs.sphereWall; if (!r) return;
-			r.input.value = v; r.val.textContent = fmt(v);
+		setSphereColor: function (v) { if (colorRefs.sphereColor) colorRefs.sphereColor.value = v; },
+		setSphereParams: function (bags) {
+			var bag = bags && bags[app.sphereShader];
+			if (!bag) return;
+			for (var k in sphereRows) {
+				if (bag[k] == null) continue;
+				sphereRows[k].input.value = bag[k];
+				sphereRows[k].valEl.textContent = fmt(bag[k]);
+			}
 		},
 		setGlobalSpeed: function (v) {
 			var r = sliderRefs.globalSpeed; if (!r) return;

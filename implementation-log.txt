@@ -480,6 +480,29 @@ REWRITES 0.6 (the plane-sweep / global spin model was rejected by the user).
 - test/run.js: 203 assertions (sphere schema defaults/sanitize/clamp, panel
   rows, 2D+3D frames with spheres on, autosave round-trip, reset path).
 
+## done (0.7.3) - glass shader selector + root-gear fix
+- render.js: sphere pass is now a full-screen analytic ray tracer. shared
+  GLSL prelude (camera rays: perspective or ortho, framebuffer-copy
+  background sampled along the bent tail ray with a px shift cap, view-space
+  sky env, Fresnel, thin film) + two fragment programs compiled lazily:
+  hollow (membrane tracing, port of hollow_bubbles.js) and layers (nearest
+  three shells, port of analytic_layers.js). uBubbles vec4[64] + uCount.
+  sphPush takes world xyz + r.
+- main.js: sphereShader ('off'|'hollow'|'layers') + sphereParams bags,
+  setSphereShader / setSphereParam. collectSpheres feeds world spheres
+  (3D: g.c3; 2D: g.cx, g.cy, z 0 under an ortho camera whose half-width is
+  cx0 / S so shells land on the circles) sorted largest-on-screen first.
+  drawSpherePass runs ONCE after the trail layer.
+- settings.js: SPHERE_SHADERS table (label + param limits/defaults) is the
+  single source for the GUI rows, the setters' clamp and the sanitizer;
+  legacy `spheres` boolean maps to hollow.
+- gui.js: selectRow helper, rebuildSphereRows per selection,
+  setSphereShader / setSphereParams sync.
+- root gear bug: caused by the impostor pass (parent quad painted over the
+  child with the same scene copy; quad clipped when the eye was near/inside
+  the root). gone with the ray trace - verified headless in 2D, 3D and with
+  the camera inside the root sphere.
+
 ## next
 - optional polish (from the 0.6 plan's future-work list): real near-plane
   segment clipping (currently edge-clamped streaks when inside the figure),
