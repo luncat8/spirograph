@@ -85,7 +85,8 @@
 		wrap.input = inp;
 		wrap.valEl = val;
 		wrap.labelEl = lab;
-		if (key) sliderRefs[key] = { input: inp, val: val };
+		wrap.values = values || null;
+		if (key) sliderRefs[key] = { input: inp, val: val, values: values || null };
 		return wrap;
 	}
 
@@ -261,9 +262,13 @@
 		periodLine = el('div', 'sub', '');
 		wholeBox.appendChild(periodLine);
 		var mpL = Settings.LIMITS.maxPeriod;
+		var mpVals = [];
+		for (var i = 0; i < 100; i++) {
+			mpVals.push(Math.round(4 * Math.pow(1000, Math.pow(i / 99, 1.5))));
+		}
 		wholeBox.appendChild(sliderRow('max period', mpL.min, mpL.max, mpL.step, app.maxPeriod, function (v) {
 			app.setMaxPeriod(v);
-		}, null, 'maxPeriod'));
+		}, mpVals, 'maxPeriod'));
 		wholeBox.appendChild(el('div', 'help',
 			'UPPER LIMIT of the closure search, not a target: the readout shows the ' +
 			'SMALLEST turn count that closes the figure, which for gear ratios on the ' +
@@ -609,7 +614,13 @@
 		},
 		setMaxPeriod: function (v) {
 			var r = sliderRefs.maxPeriod; if (!r) return;
-			r.input.value = v; r.val.textContent = fmt(v);
+			if (r.values) {
+				var idx = nearestIndex(r.values, v);
+				r.input.value = idx;
+				r.val.textContent = fmt(r.values[idx]);
+			} else {
+				r.input.value = v; r.val.textContent = fmt(v);
+			}
 		},
 		setSamplesPerTurn: function (v) {
 			var r = sliderRefs.samplesPerTurn; if (!r) return;

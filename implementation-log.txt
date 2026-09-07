@@ -505,7 +505,7 @@ REWRITES 0.6 (the plane-sweep / global spin model was rejected by the user).
 
 ## next
 - optional polish (from the 0.6 plan's future-work list): real near-plane
-  segment clipping (currently edge-clamped streaks when inside the figure),
-  camera inertia/momentum, screen-space XYZ gizmo / ground grid, perspective
+  segment clipping (currently edge-clamped streaks when inside the figure), 
+	screen-space XYZ gizmo / ground grid, perspective
   line width (x 1/dist), per-gear spin, chunked post-gesture overlay rebake,
   OBJ export of a whole-mode 3D ring.

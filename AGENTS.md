@@ -1,6 +1,5 @@
 # AGENTS.md
 
-guidance for LLM agents
 
 ## style
 
@@ -16,13 +15,20 @@ guidance for LLM agents
 		inside the frame loop.
 		reuse preallocated buffers / typed arrays / scratch objects.
 		allocate once at setup, mutate in place per frame.
+		these are not strict rules, use best.
+
+	plan*.md is NOT the implementation log. if need - update/improve plan, but keep final plan as artifact for possible fork or reimplementation without referring of what was and what done, without referring chat, etc.
+
+	only essential concise comments in code that really helpful i.e. explain why and decision. prefer descriptive naming.
+
+	no legacy support, no old versions, no outdated browsers, no leftovers and no over protecting from unreal edge cases. we need clean architecture.
 
 ## runtime
 
 	file:// friendly, classic <script> tags, no modules, no build.
 	guard module.exports so files also run under node.
-	no internet links; vendor any lib as a local js file.
-	WebGL2 only, zero dependencies.
+	no internet links: vendor any lib as a local js file.
+	WebGL2
 
 ## don't forget
 
@@ -30,7 +36,7 @@ after gui changes if need - update save, load and reset
 
 ## files
 	implementation-log.txt - what is already done and next step for LLM agents
-	findings-pitfalls-skills.md - notes and pitfalls for LLM agents
+	findings-pitfalls-skills.md - notes and pitfalls for LLM agents. write here if found good way to do something.
 	CHANGELOG.md - short release notes
 	js/main.js - init, loop
 	js/gear.js - gear math

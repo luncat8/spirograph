@@ -36,7 +36,7 @@ glass shader: analytical layered glass works different when circles are off - pr
 	  in a ray-traced hollow glass shell (full-screen analytic trace, no
 	  geometry, exact depth order - nested gears and a camera inside a shell
 	  just work). two shaders, each with its own slider set (ports of
-	  luncat8/glass-spheres-shader, spheres only): `hollow glass bubbles`
+	  https://github.com/luncat8/glass-spheres-shader.git, spheres only): `hollow glass bubbles`
 	  (membrane wall traced through up to 10 layers, Fresnel, Beer-Lambert
 	  tint, thin-film iridescence, dispersion) and `analytic layered glass`
 	  (nearest three shells composited); plus a sphere tint color picker.
@@ -46,7 +46,7 @@ glass shader: analytical layered glass works different when circles are off - pr
 	  on period-friendly values; `max period` sets the search ceiling
 	zoom / pan, pause, clear, reset to default scene
 	save scene as a .js file (rename to default.js for startup scene) / load
-	  .js or legacy .json (file or clipboard), autosave to localStorage
+	  .js or .json (file or clipboard), autosave to localStorage
 	60+ FPS pan/zoom in both modes: direct-draw during gestures, one overlay
 	  re-bake on release, auto-tuned decimation on weak GPUs
 	3D mode: a genuine two-axis generalization - every gear is a sphere that

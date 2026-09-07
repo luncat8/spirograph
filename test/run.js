@@ -843,9 +843,10 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	}
 	var mp = findRow('max period');
 	ok(!!mp, 'panel has a max period slider');
-	ok(String(mp.input.min) === String(Settings.LIMITS.maxPeriod.min) &&
-		String(mp.input.max) === String(Settings.LIMITS.maxPeriod.max), 'max period range comes from Settings.LIMITS',
-		mp.input.min + '..' + mp.input.max);
+	ok(String(mp.input.min) === '0' && String(mp.input.max) === '99', 'max period slider uses logarithmic index range');
+	ok(mp.values && mp.values.length === 100, 'max period slider has 100 logarithmic steps');
+	ok(mp.values[0] === Settings.LIMITS.maxPeriod.min, 'first mapped value is min');
+	ok(mp.values[mp.values.length - 1] === Settings.LIMITS.maxPeriod.max, 'last mapped value is max');
 	var det = findRow('detail');
 	ok(!!det, 'panel has a detail (samples/turn) slider');
 	det.input.value = 400;
