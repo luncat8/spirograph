@@ -47,6 +47,8 @@
 		showPoints: false,
 		glowPoints: false,
 		drawTrails: false,
+		autoYaw: 0,            // 3D auto-camera speeds (rad/s; schema-seeded)
+		autoPitch: 0,
 		sphereShader: 'off',
 		sphereColor: '#9fd8ff',
 		sphereParams: Settings.sphereDefaults()   // per-shader slider bags
@@ -100,6 +102,7 @@
 	var orbiting = false;
 	var camEase = null;                       // {from, to, t0, dur} while easing
 	var camFitR = 3;                          // last fit radius (dolly clamp anchor)
+	var autoPitchDir = 1;                     // auto-camera pitch bounce direction
 
 	// touch / multi-pointer state
 	var pointers = new Map();
@@ -536,6 +539,22 @@
 		else settleCamera();
 	};
 
+	// auto-camera speeds (log sliders; 0 = that axis stays still). no render
+	// work here: they only matter while the (session-only) toggle spins the
+	// camera, and that path requests a render every frame already.
+	App.setAutoYaw = function (v) {
+		var s = Settings.clamp('autoYaw', +v);
+		if (s === App.autoYaw) return;
+		App.autoYaw = s;
+		markDirty();
+	};
+	App.setAutoPitch = function (v) {
+		var s = Settings.clamp('autoPitch', +v);
+		if (s === App.autoPitch) return;
+		App.autoPitch = s;
+		markDirty();
+	};
+
 	App.fitView = function () { startFit(true); };
 	App.resetCamera = function () {
 		if (!App.cam) App.cam = Camera3.defaultCamera();
@@ -901,17 +920,62 @@
 		} else fallbackCopy(json);
 	};
 
+	// saved file name carries the scene's identity - it becomes the preset
+	// label in the dropdown (presets_combine.py takes the name from the file):
+	// dimension, trail drawn, whole mode, then a timestamp.
+	function pad2(n) { return (n < 10 ? '0' : '') + n; }
+	function sceneFileName() {
+		var d = new Date();
+		var name = App.dim === '3d' ? '3d' : '2d';
+		if (App.drawTrails) name += '-tails';
+		if (App.mode === 'whole') name += '-whole';
+		return name + '-' + pad2(d.getFullYear() % 100) + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) +
+			'-' + pad2(d.getHours()) + '-' + pad2(d.getMinutes()) + '-' + pad2(d.getSeconds()) + '.js';
+	}
+	App.sceneFileName = sceneFileName;
+
 	// scene file format is a JS module exposing SETTINGS (node-friendly IIFE),
-	// so a saved file can be dropped in next to index.html as `default.js` to
-	// become the startup scene. legacy .json files still load.
+	// so a saved file doubles as a preset / startup scene (default.js). legacy
+	// .json files still load.
 	App.downloadScene = function () {
+		var name = sceneFileName();
 		var blob = new Blob([sceneJs()], { type: 'application/javascript' });
 		var url = URL.createObjectURL(blob);
 		var a = document.createElement('a');
-		a.href = url; a.download = 'spirograph.js';
+		a.href = url; a.download = name;
 		document.body.appendChild(a); a.click(); document.body.removeChild(a);
 		URL.revokeObjectURL(url);
-		toast('saved spirograph.js (rename to default.js for startup scene)');
+		toast('saved ' + name + ' - presets_combine.py adds it as a preset');
+	};
+
+	// ---- presets --------------------------------------------------------
+	// the page cannot list its own directory under file://, so the preset
+	// list ships inside default.js: presets_combine.py (run by hand from the
+	// app directory) merges the scene files saved next to index.html into
+	// default.js's PRESETS array and renames the consumed files *.delete-me.
+	function presetList() {
+		var raw = window.PRESETS;
+		if (!raw || !raw.length) return [];
+		var out = [];
+		for (var i = 0; i < raw.length; i++) {
+			var p = raw[i];
+			if (p && typeof p.name === 'string' && p.scene && typeof p.scene === 'object') out.push(p);
+		}
+		return out;
+	}
+	App.presets = presetList;
+
+	// load a dropdown preset by name: the full load path (gears, app bag,
+	// dimension, camera), exactly what the save button wrote into the file.
+	App.loadPreset = function (name) {
+		var list = presetList();
+		for (var i = 0; i < list.length; i++) {
+			if (list[i].name !== name) continue;
+			try { loadObject(list[i].scene); toast('preset: ' + name); }
+			catch (e) { toast('preset failed: ' + e.message); }
+			return;
+		}
+		toast('preset not found: ' + name);
 	};
 
 	App.loadFile = function () {
@@ -963,7 +1027,9 @@
 	}
 
 	// accept a JSON scene or a SETTINGS js module (evaluated in a throwaway
-	// script tag so file:// works; the module writes window.SETTINGS).
+	// script tag so file:// works; the module writes window.SETTINGS). a
+	// combined default.js also writes window.PRESETS: opening one adopts its
+	// preset list into the dropdown.
 	function loadSceneText(txt) {
 		var t = txt.replace(/^\uFEFF/, '').trim();
 		if (t.charAt(0) === '{' || t.charAt(0) === '[') {
@@ -976,6 +1042,7 @@
 		document.body.removeChild(s);
 		if (!window.SETTINGS) throw new Error('no SETTINGS export found');
 		loadObject(window.SETTINGS);
+		GUI.setPresets && GUI.setPresets();
 	}
 
 	// colorMode for a loaded scene: explicit field, else the mode all pencils
@@ -2153,9 +2220,18 @@
 			// whole mode is static once baked: render only on invalidation
 			// (scene edits, view changes, overlay toggles), never per frame.
 		}
-		// 3D auto-rotate: slow yaw drift keeps the scene moving per frame.
+		// 3D auto-rotate: two log-scale speeds (0 = axis still). the pitch
+		// drift bounces at the clamp instead of pinning there, so a two-axis
+		// setting tours the figure rather than ending up staring at a pole.
 		if (App.dim === '3d' && App.autoRotate && !App.paused) {
-			if (App.cam) Camera3.orbitBy(App.cam, dt * 0.2, 0);
+			if (App.cam) {
+				var dp = App.autoPitch * dt * autoPitchDir;
+				if (App.cam.pitch + dp > Camera3.PITCH_LIMIT || App.cam.pitch + dp < -Camera3.PITCH_LIMIT) {
+					autoPitchDir = -autoPitchDir;
+					dp = -dp;
+				}
+				Camera3.orbitBy(App.cam, App.autoYaw * dt, dp);
+			}
 			App.requestRender();
 		}
 		if (App.needsRender) {

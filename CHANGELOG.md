@@ -1,5 +1,37 @@
 # CHANGELOG
 
+## 0.7.5 - presets + auto-camera speed sliders
+- **preset system.** the save button (d) now writes a descriptively named
+  file - `3d-tails-whole-yy-mm-dd-hh-mm-ss.js` (dimension, trail drawn, whole
+  mode, then a timestamp) instead of the generic `spirograph.js`. drop the
+  saved files next to index.html and run the new `presets_combine.py`: every
+  scene file found there is appended to `default.js`'s PRESETS list (preset
+  name = file name; the startup scene SETTINGS is preserved) and the consumed
+  files are renamed `*.delete-me` so a second run adds nothing twice - the
+  rename is the "already combined" marker, no sidecar state. `default.js` now
+  publishes SETTINGS + PRESETS, and the panel's scene section shows a preset
+  dropdown above the save/load buttons; picking an entry loads that scene
+  exactly as saved (gears, app bag, dimension, camera), and opening someone
+  else's combined default.js via open/paste adopts its preset list. no
+  presets - no dropdown row.
+- **auto-camera speed sliders.** the 3D `auto-rotate camera` checkbox is
+  joined by `auto yaw` and `auto pitch` log-scale sliders (0 = that axis
+  stays still, then 0.01..3 rad/s at 3 significant digits; defaults 0.2 /
+  0). the pitch drift bounces at the clamp instead of pinning at the pole,
+  so a two-axis setting tours the figure. both speeds persist in the app bag
+  (the toggle itself stays session-only).
+- the log-scale slider code is deduplicated: one ladder helper (min..max,
+  n steps, rounded, duplicates dropped) now feeds `max period`, `trail
+  length` and the two new speed sliders, and all the panel slider sync
+  setters share one path. slider values format to 3 significant digits
+  instead of 3 decimals, so the low end of a log scale no longer reads
+  0.011 / 0.012 for everything below 0.01.
+- **fix: stale headless test** - `trail slider sets the per-pencil cap`
+  assigned a raw point count (1500) to the trail row, which has been an
+  index slider over a log ladder since 0.5.5 (a real browser clamps the
+  assignment, the node stub does not, and the value fell off the ladder).
+  it now picks a real ladder position.
+
 ## 0.7.4 - no-op slider bakes removed, gesture quality is measured
 - **fix: the whole-mode `max period` and `detail` sliders flickered the canvas
   even when the figure could not change.** both are quantized downstream (max

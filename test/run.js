@@ -418,9 +418,13 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 
 	var trail = row('trail length');
 	ok(!!trail, 'menu has a trail length slider');
-	trail.input.value = 1500;
+	// the row is an index slider over a log ladder (0.5.5): the handle
+	// position IS the value; assigning a raw point count used to fall off
+	// the ladder and set the cap to garbage.
+	var ti = Math.floor(trail.values.length / 2);
+	trail.input.value = ti;
 	trail.input.dispatch('input');
-	ok(gear.trailCap === 1500, 'trail slider sets the per-pencil cap', gear.trailCap);
+	ok(gear.trailCap === trail.values[ti], 'trail slider sets the per-pencil cap', gear.trailCap);
 
 	// whole mode swaps in the valid-position sliders and rebuilds the open menu
 	App.setMode('whole');
@@ -1150,6 +1154,219 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	App.setDim('2d');
 	App.resetScene();
 	w.tick(5, 16);
+})();
+
+// ---- 0.7.5: preset save names ----------------------------------------
+(function presetSaveName() {
+	App.resetScene();
+	ok(/^2d-tails-\d\d-\d\d-\d\d-\d\d-\d\d-\d\d\.js$/.test(App.sceneFileName()),
+		'default save name: 2d + tails + timestamp', App.sceneFileName());
+	App.setDrawTrails(false);
+	ok(/^2d-\d\d-/.test(App.sceneFileName()) && App.sceneFileName().indexOf('tails') < 0,
+		'trail hidden -> no -tails flag');
+	App.setMode('whole');
+	ok(/^2d-whole-/.test(App.sceneFileName()), 'whole mode adds -whole');
+	App.setDim('3d');
+	ok(/^3d-whole-/.test(App.sceneFileName()), '3D swaps the prefix');
+	App.setMode('animate'); App.setDrawTrails(true); App.setDim('2d');
+	// end-to-end: the save button offers the auto name on the download anchor
+	// and writes a SETTINGS module (what presets_combine.py consumes).
+	var realCreate = w.document.createElement, anchor = null, blobText = '';
+	var RealBlob = w.Blob;
+	w.Blob = function (parts) { blobText = parts[0]; };
+	w.document.createElement = function (tag) { var n = realCreate(tag); if (tag === 'a') anchor = n; return n; };
+	App.downloadScene();
+	w.document.createElement = realCreate;
+	w.Blob = RealBlob;
+	ok(/^(2d|3d)-(tails-)?(whole-)?\d\d-\d\d-\d\d-\d\d-\d\d-\d\d\.js$/.test(anchor.download),
+		'save button downloads the auto-named file', anchor.download);
+	ok(blobText.indexOf('var S =') >= 0 && blobText.indexOf('root.SETTINGS') >= 0,
+		'saved file is a SETTINGS module (a valid preset)');
+})();
+
+// ---- 0.7.5: preset dropdown + loadPreset ------------------------------
+(function presetsUI() {
+	function tree(nKids) {
+		var roots = Gear.defaultScene();
+		for (var i = 0; i < nKids; i++) {
+			roots[0].children.push(Gear.makeGear({
+				r: 0.1, speed: 0.3, internal: true,
+				pencil: { d: 0.05, c1: { on: true, color: '#ffffff' }, c2: { on: false } }
+			}));
+		}
+		Gear.initRuntime(roots[0], null);
+		return roots;
+	}
+	function findPresetSelect(host) {
+		var found = null;
+		(function walk(n) {
+			if (found || !n) return;
+			if (n.tagName === 'SELECT' && n.children.length && n.children[0].value === '') { found = n; return; }
+			for (var i = 0; i < (n.children || []).length; i++) walk(n.children[i]);
+		})(host);
+		return found;
+	}
+	// boot exactly like index.html would with a combined default.js:
+	// SETTINGS = startup scene, PRESETS = dropdown entries.
+	var startup = Gear.serialize(tree(3), { zoom: 2.5, pan: [0.1, -0.2] }, 2, 'frequency');
+	var sceneA = Gear.serialize(Gear.defaultScene(), { zoom: 1, pan: [0, 0] }, 1, 'frequency');
+	var sceneB = Gear.serialize(tree(2), { zoom: 1, pan: [0, 0] }, 1, 'frequency');
+	sceneB.dim = '3d';
+	sceneB.app = Settings.sanitizeApp({ mode: 'whole' });
+	var w2 = boot({
+		settings: startup,
+		presets: [
+			{ name: '2d-25-01-01-00-00-00', scene: sceneA },
+			{ name: '3d-tails-whole-25-01-01-00-00-01', scene: sceneB }
+		]
+	});
+	var App2 = w2.App;
+	ok(App2.allGears.length === 5, 'window.SETTINGS loads as the startup scene', App2.allGears.length);
+	ok(App2.view.zoom === 2.5 && App2.globalSpeed === 2, 'startup scene restores view + speed');
+	var sel = findPresetSelect(w2.byId.panel);
+	ok(!!sel, 'preset dropdown present when presets exist');
+	ok(sel.children.length === 3, 'placeholder + one option per preset', sel.children.length);
+	sel.value = '3d-tails-whole-25-01-01-00-00-01';
+	sel.dispatch('change');
+	ok(sel.value === '', 'selection falls back to the placeholder after a pick');
+	ok(App2.allGears.length === 4 && App2.dim === '3d' && App2.mode === 'whole',
+		'preset load restores gears + dim + mode', App2.allGears.length + ' ' + App2.dim + ' ' + App2.mode);
+	App2.loadPreset('2d-25-01-01-00-00-00');
+	ok(App2.allGears.length === 2 && App2.dim === '2d' && App2.mode === 'animate', 'loadPreset by name');
+	App2.loadPreset('nope');
+	ok(w2.byId.toast.textContent.indexOf('preset not found') === 0, 'unknown preset toasts');
+	// the main boot (no PRESETS) shows no dropdown at all
+	ok(!findPresetSelect(w.byId.panel), 'no preset dropdown without presets');
+})();
+
+// ---- 0.7.5: shipped default.js shape ----------------------------------
+(function shippedDefaultFile() {
+	var dj = require('../default.js');
+	ok(dj.SETTINGS && dj.SETTINGS.gears && dj.SETTINGS.gears.length > 0, 'shipped default.js exports its startup scene');
+	ok(Array.isArray(dj.PRESETS) && dj.PRESETS.length === 0, 'shipped default.js exports an empty preset list');
+})();
+
+// ---- 0.7.5: auto-camera speed sliders (log scale, pitch bounce) -------
+(function autoCameraSpeeds() {
+	function findPanelRow(label) {
+		var found = null;
+		(function walk(n) {
+			if (found) return;
+			if (n.input && n.labelEl && n.labelEl.textContent.indexOf(label) === 0) { found = n; return; }
+			for (var i = 0; i < (n.children || []).length; i++) walk(n.children[i]);
+		})(w.byId.panel);
+		return found;
+	}
+	var d = Settings.defaultApp();
+	ok(d.autoYaw === 0.2 && d.autoPitch === 0, 'auto-camera defaults: yaw 0.2 rad/s, pitch still',
+		JSON.stringify([d.autoYaw, d.autoPitch]));
+	ok(Settings.clamp('autoYaw', 0) === 0 && Settings.clamp('autoYaw', 99) === 3, 'speed clamp keeps 0 (off) and caps the top');
+	ok(Settings.sanitizeApp({ autoYaw: -1 }).autoYaw === 0, 'a negative speed clamps to 0');
+	ok(Settings.sanitizeApp({ autoPitch: 'x' }).autoPitch === 0, 'garbage speed falls back to the default');
+	var yawRow = findPanelRow('auto yaw'), pitRow = findPanelRow('auto pitch');
+	ok(!!yawRow && !!pitRow, 'panel has the auto yaw / auto pitch sliders');
+	ok(yawRow.values[0] === 0 && pitRow.values[0] === 0, 'speed ladders start at 0 = axis off');
+	var rising = yawRow.values.length > 50;
+	for (var i = 1; i < yawRow.values.length; i++) if (yawRow.values[i] <= yawRow.values[i - 1]) rising = false;
+	ok(rising, 'speed ladder is a strictly rising log scale', yawRow.values.length);
+	ok(yawRow.values[yawRow.values.length - 1] === Settings.LIMITS.autoYaw.max, 'speed ladder ends at the max');
+	ok(yawRow.values.indexOf(0.2) >= 0, 'the 0.2 default is a ladder value (no display drift)');
+	var idx = Math.floor(yawRow.values.length * 0.7);
+	yawRow.input.value = idx;
+	yawRow.input.dispatch('input');
+	ok(App.autoYaw === yawRow.values[idx], 'yaw slider drives the speed', App.autoYaw);
+
+	// live behaviour: default yaw drift, pitch still, rate follows the slider
+	App.resetScene();
+	App.setDim('3d');
+	App.setAutoRotate(true);
+	w.tick(10, 16);
+	var pit0 = App.cam.pitch;
+	ok(App.cam.yaw !== 0 && App.cam.pitch === pit0, 'auto-rotate drifts yaw only at the default pitch speed');
+	App.setAutoYaw(2);
+	var yawB = App.cam.yaw;
+	w.tick(10, 16);
+	ok(App.cam.yaw - yawB > 0.16, 'raising the yaw speed rotates faster', (App.cam.yaw - yawB).toFixed(3));
+	// pitch drift bounces at the clamp instead of pinning at the pole
+	App.setAutoPitch(3);
+	App.cam.pitch = Camera3.PITCH_LIMIT - 0.02;
+	w.tick(3, 16);
+	ok(App.cam.pitch < Camera3.PITCH_LIMIT - 0.01, 'auto pitch bounces at the clamp',
+		App.cam.pitch.toFixed(3));
+	ok(Math.abs(App.cam.pitch) <= Camera3.PITCH_LIMIT, 'pitch never leaves the clamp band');
+	// persisted in the app bag, restored by reset
+	App.setAutoYaw(1.5); App.setAutoPitch(0.5);
+	App.markDirty(); w.flushTimers(1000);
+	var stored = JSON.parse(w.localStorage._d['spiro.autosave.v1']);
+	ok(stored.app.autoYaw === 1.5 && stored.app.autoPitch === 0.5, 'auto-camera speeds autosave in the app bag');
+	App.setAutoRotate(false);
+	App.resetScene();
+	ok(App.autoYaw === 0.2 && App.autoPitch === 0, 'reset restores the speed defaults');
+})();
+
+// ---- 0.7.5: presets_combine.py merges scene files into default.js -----
+(function presetsCombinePy() {
+	var cp = require('child_process'), fs = require('fs'), os = require('os'), p = require('path'), vm = require('vm');
+	var py = null;
+	['python3', 'python'].some(function (cmd) {
+		try { cp.execSync(cmd + ' --version', { stdio: 'pipe' }); py = cmd; return true; } catch (e) { return false; }
+	});
+	if (!py) { ok(true, 'python not available - presets_combine.py checks skipped'); return; }
+	function moduleJs(s) {
+		return '(function (root) {\n\tvar S = ' + JSON.stringify(s) + ';\n' +
+			'\tif (typeof module !== \'undefined\' && module.exports) module.exports = S;\n' +
+			'\telse root.SETTINGS = S;\n' +
+			'})(typeof window !== \'undefined\' ? window : globalThis);\n';
+	}
+	function runCombine(dir) {
+		cp.execSync(py + ' ' + JSON.stringify(p.join(__dirname, '..', 'presets_combine.py')), { cwd: dir, stdio: 'pipe' });
+	}
+	function loadDefault(dir) {
+		var ctx = {};
+		vm.createContext(ctx);
+		vm.runInContext(fs.readFileSync(p.join(dir, 'default.js'), 'utf8'), ctx, { filename: 'default.js' });
+		return ctx;
+	}
+	var sA = Gear.serialize(Gear.defaultScene(), { zoom: 2, pan: [0, 0] }, 1, 'frequency');
+	var sB = Gear.serialize(Gear.defaultScene(), { zoom: 3, pan: [0, 0] }, 1, 'frequency');
+	sB.dim = '3d';
+	var dir = fs.mkdtempSync(p.join(os.tmpdir(), 'spiro-presets-'));
+	try {
+		var base = Gear.serialize(Gear.defaultScene(), { zoom: 1, pan: [0, 0] }, 1, 'frequency');
+		fs.writeFileSync(p.join(dir, 'default.js'), moduleJs(base));
+		fs.writeFileSync(p.join(dir, '2d-25-01-01-10-00-00.js'), moduleJs(sA));
+		fs.writeFileSync(p.join(dir, '3d-tails-whole-25-01-01-11-00-00.js'), moduleJs(sB));
+		fs.writeFileSync(p.join(dir, 'plain.json'), JSON.stringify(sA));
+		fs.writeFileSync(p.join(dir, 'not-a-scene.js'), 'console.log("not a scene");\n');
+		runCombine(dir);
+		var ctx = loadDefault(dir);
+		ok(ctx.SETTINGS && ctx.SETTINGS.view.zoom === 1, 'combiner preserves the startup scene');
+		ok(Array.isArray(ctx.PRESETS) && ctx.PRESETS.length === 3, 'every scene file became a preset',
+			ctx.PRESETS && ctx.PRESETS.length);
+		var names = ctx.PRESETS.map(function (x) { return x.name; });
+		ok(names.join(',') === '2d-25-01-01-10-00-00,3d-tails-whole-25-01-01-11-00-00,plain',
+			'preset names come from the file names', names.join(','));
+		ok(ctx.PRESETS[0].scene.view.zoom === 2 && ctx.PRESETS[1].scene.dim === '3d' && ctx.PRESETS[2].scene.view.zoom === 2,
+			'preset scenes keep their content');
+		ok(fs.existsSync(p.join(dir, '2d-25-01-01-10-00-00.js.delete-me')) &&
+			fs.existsSync(p.join(dir, 'plain.json.delete-me')), 'combined files are renamed *.delete-me');
+		ok(fs.existsSync(p.join(dir, 'not-a-scene.js')), 'non-scene files are left alone');
+		var gen = fs.readFileSync(p.join(dir, 'default.js'), 'utf8');
+		runCombine(dir);
+		ok(fs.readFileSync(p.join(dir, 'default.js'), 'utf8') === gen, 'a second run changes nothing (rename = done marker)');
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+	var dir2 = fs.mkdtempSync(p.join(os.tmpdir(), 'spiro-presets-'));
+	try {
+		fs.writeFileSync(p.join(dir2, '2d-25-01-01-00-00-00.js'), moduleJs(sA));
+		runCombine(dir2);
+		var ctx2 = loadDefault(dir2);
+		ok(ctx2.SETTINGS === null && ctx2.PRESETS.length === 1,
+			'missing default.js is created (no startup scene, presets kept)');
+	} finally {
+		fs.rmSync(dir2, { recursive: true, force: true });
+	}
 })();
 
 console.log((fail ? 'FAILED' : 'OK') + ': ' + pass + ' passed, ' + fail + ' failed');

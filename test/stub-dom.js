@@ -109,6 +109,9 @@ function boot(opts) {
 		flushTimers: flushTimers,
 		performance: { now: function () { return Date.now(); } },
 		navigator: { clipboard: null },
+		// downloadScene() needs Blob + object URLs; the stub captures bytes.
+		Blob: function (parts) { this.parts = parts; },
+		URL: { createObjectURL: function () { return 'blob:stub'; }, revokeObjectURL: function () { } },
 		localStorage: opts.autosave === false ? null : {
 			_d: {},
 			getItem: function (k) { return this._d[k] || null; },
@@ -133,6 +136,10 @@ function boot(opts) {
 	};
 	sandbox.document.body.innerHTML = '';
 	vm.createContext(sandbox);
+	// optional startup scene / preset list, exactly as a default.js script
+	// tag would publish them (SETTINGS / PRESETS) before main.js runs.
+	if (opts.settings) sandbox.SETTINGS = opts.settings;
+	if (opts.presets) sandbox.PRESETS = opts.presets;
 	var root = path.join(__dirname, '..');
 	function load(f) { vm.runInContext(fs.readFileSync(path.join(root, f), 'utf8'), sandbox, { filename: f }); }
 	['js/settings.js', 'js/gear.js', 'js/render.js', 'js/camera3.js'].forEach(load);

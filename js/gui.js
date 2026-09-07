@@ -26,6 +26,7 @@
 	var selectRefs = {};   // dit for <select> inputs (glass shader)
 	var sphereHost = null; // glass shader slider rows host
 	var sphereRows = {};   // param key -> slider row of the selected shader
+	var presetHost = null; // preset dropdown host (scene section), rebuilt in place
 	// reference into the open per-gear menu so refreshAnimMode() can relabel the
 	// anim-speed slider prefix after the global color mode changes.
 	var speedLabRefresh = null;
@@ -90,7 +91,45 @@
 		return wrap;
 	}
 
-	function fmt(v) { return (Math.round(v * 1000) / 1000).toString(); }
+	// 3 significant digits, not 3 decimals: log-scale values span decades and
+	// fixed decimals flatten the low end (0.0107 and 0.0114 both read "0.011").
+	function fmt(v) { return String(Number((+v).toPrecision(3))); }
+
+	// round to 3 significant digits (keeps the low end of a log ladder
+	// distinct: 0.0107 vs 0.0114).
+	function sig3(v) {
+		var mag = Math.pow(10, Math.floor(Math.log10(v)));
+		return Math.round((v / mag) * 100) / 100 * mag;
+	}
+
+	// the one ladder behind every log-scale slider (max period, trail length,
+	// auto-camera speeds): n index-slider values from min to max, rounded
+	// (Math.round for counts, sig3 for rates), duplicates dropped - a
+	// duplicate fires an input event that changes nothing (spurious re-bake /
+	// edit). callers prepend 0 themselves when the value can mean "off".
+	function logLadder(min, max, n, round) {
+		var out = [];
+		for (var i = 0; i < n; i++) {
+			var v = round(min * Math.pow(max / min, i / (n - 1)));
+			if (out[out.length - 1] !== v) out.push(v);
+		}
+		return out;
+	}
+
+	// sync a labeled slider (plain or ladder-mapped) from a loaded / reset
+	// value without re-firing its input handler.
+	function syncSlider(key, v) {
+		var r = sliderRefs[key];
+		if (!r) return;
+		if (r.values) {
+			var idx = nearestIndex(r.values, v);
+			r.input.value = idx;
+			r.val.textContent = fmt(r.values[idx]);
+		} else {
+			r.input.value = v;
+			r.val.textContent = fmt(v);
+		}
+	}
 
 	function checkboxRow(label, checked, onChange, key) {
 		var wrap = el('div', 'row');
@@ -135,6 +174,50 @@
 		wrap.appendChild(lab);
 		if (key) selectRefs[key] = sel;
 		return wrap;
+	}
+
+	// preset dropdown: a placeholder option plus one option per preset
+	// (default.js's PRESETS list, filled by presets_combine.py). after a pick
+	// the selection falls back to the placeholder so the same preset can be
+	// chosen twice in a row.
+	function presetRow(names, onPick) {
+		var wrap = el('div', 'row');
+		var lab = el('label', null, 'preset ');
+		var sel = document.createElement('select');
+		var ph = document.createElement('option');
+		ph.value = '';
+		ph.textContent = 'load\u2026';
+		sel.appendChild(ph);
+		for (var i = 0; i < names.length; i++) {
+			var o = document.createElement('option');
+			o.value = names[i];
+			o.textContent = names[i];
+			sel.appendChild(o);
+		}
+		sel.value = '';
+		sel.addEventListener('change', function () {
+			var name = sel.value;
+			sel.value = '';
+			if (name) onPick(name);
+		});
+		lab.appendChild(sel);
+		wrap.appendChild(lab);
+		return wrap;
+	}
+
+	// fill the (always present) preset host: dropdown + help when presets
+	// exist, nothing otherwise. re-runnable - opening a combined default.js
+	// via open/paste adopts its preset list.
+	function rebuildPresetRow() {
+		if (!presetHost) return;
+		presetHost.innerHTML = '';
+		var presets = app.presets();
+		if (!presets.length) return;
+		var names = [];
+		for (var i = 0; i < presets.length; i++) names.push(presets[i].name);
+		presetHost.appendChild(presetRow(names, function (name) { app.loadPreset(name); }));
+		presetHost.appendChild(el('div', 'help',
+			'presets live in default.js: save scenes next to index.html, run presets_combine.py.'));
 	}
 
 	// slider rows of the selected glass shader (one per param in its table).
@@ -225,6 +308,16 @@
 		dim3Box.appendChild(checkboxRow('auto-rotate camera', !!app.autoRotate, function (v) {
 			app.setAutoRotate(v);
 		}, 'autoRotate'));
+		// auto-camera speeds, log scale, 0 = that axis stays still. pitch
+		// drift bounces at the clamp (main.js), so a two-axis setting tours
+		// the figure instead of pinning at the pole.
+		var yawL = Settings.LIMITS.autoYaw, pitL = Settings.LIMITS.autoPitch;
+		dim3Box.appendChild(sliderRow('auto yaw', yawL.min, yawL.max, 0.01, app.autoYaw, function (v) {
+			app.setAutoYaw(v);
+		}, [0].concat(logLadder(yawL.min, yawL.max, 100, sig3)), 'autoYaw'));
+		dim3Box.appendChild(sliderRow('auto pitch', pitL.min, pitL.max, 0.01, app.autoPitch, function (v) {
+			app.setAutoPitch(v);
+		}, [0].concat(logLadder(pitL.min, pitL.max, 100, sig3)), 'autoPitch'));
 		var cbtns = el('div', 'btns');
 		cbtns.appendChild(buttonRow('fit view (f)', function () { app.fitView(); }));
 		cbtns.appendChild(buttonRow('reset camera', function () { app.resetCamera(); }));
@@ -264,14 +357,9 @@
 		// used to fire onInput with an unchanged value (a re-bake of the identical
 		// figure - visible as a canvas flicker).
 		var mpL = Settings.LIMITS.maxPeriod;
-		var mpVals = [];
-		for (var i = 0; i < 100; i++) {
-			var mv = Math.round(4 * Math.pow(1000, Math.pow(i / 99, 1.5)));
-			if (mpVals[mpVals.length - 1] !== mv) mpVals.push(mv);
-		}
 		wholeBox.appendChild(sliderRow('max period', mpL.min, mpL.max, mpL.step, app.maxPeriod, function (v) {
 			app.setMaxPeriod(v);
-		}, mpVals, 'maxPeriod'));
+		}, logLadder(mpL.min, mpL.max, 100, Math.round), 'maxPeriod'));
 		wholeBox.appendChild(el('div', 'help',
 			'UPPER LIMIT of the closure search, not a target: the readout shows the ' +
 			'SMALLEST turn count that closes the figure, which for gear ratios on the ' +
@@ -339,6 +427,12 @@
 
 		var sval = el('div', 'sub', 'scene');
 		panel.appendChild(sval);
+		// preset dropdown (default.js's PRESETS) above the save/load buttons.
+		// the host is permanent so the row can be rebuilt in place when a
+		// combined default.js is opened and its preset list adopted.
+		presetHost = el('div', 'levels');
+		panel.appendChild(presetHost);
+		rebuildPresetRow();
 		var sbtns = el('div', 'btns');
 		sbtns.appendChild(buttonRow('copy (s)', function () { app.copyScene(); }));
 		sbtns.appendChild(buttonRow('save (d)', function () { app.downloadScene(); }));
@@ -496,14 +590,9 @@
 
 		if (!whole) {
 			var tcL = Settings.LIMITS.trailCap;
-			var tcVals = [];
-			for (var i = 0; i < 100; i++) {
-				var tv = Math.round(tcL.min * Math.pow(tcL.max / tcL.min, Math.pow(i / 99, 1.5)));
-				if (tcVals[tcVals.length - 1] !== tv) tcVals.push(tv);
-			}
 			menu.appendChild(sliderRow('trail length', tcL.min, tcL.max, tcL.step, gear.trailCap, function (v) {
 				app.setTrailCap(gear, v); edit(gear, 'trail');
-			}, tcVals));
+			}, logLadder(tcL.min, tcL.max, 100, Math.round)));
 			menu.appendChild(el('div', 'help',
 				'how many points of the trail stay on screen (animate mode). whole mode ' +
 				'draws the entire closed curve - its smoothness is the sidebar detail slider. ' +
@@ -617,24 +706,13 @@
 				sphereRows[k].valEl.textContent = fmt(bag[k]);
 			}
 		},
-		setGlobalSpeed: function (v) {
-			var r = sliderRefs.globalSpeed; if (!r) return;
-			r.input.value = v; r.val.textContent = fmt(v);
-		},
-		setMaxPeriod: function (v) {
-			var r = sliderRefs.maxPeriod; if (!r) return;
-			if (r.values) {
-				var idx = nearestIndex(r.values, v);
-				r.input.value = idx;
-				r.val.textContent = fmt(r.values[idx]);
-			} else {
-				r.input.value = v; r.val.textContent = fmt(v);
-			}
-		},
-		setSamplesPerTurn: function (v) {
-			var r = sliderRefs.samplesPerTurn; if (!r) return;
-			r.input.value = v; r.val.textContent = fmt(v);
-		},
+		setGlobalSpeed: function (v) { syncSlider('globalSpeed', v); },
+		setMaxPeriod: function (v) { syncSlider('maxPeriod', v); },
+		setSamplesPerTurn: function (v) { syncSlider('samplesPerTurn', v); },
+		setAutoYaw: function (v) { syncSlider('autoYaw', v); },
+		setAutoPitch: function (v) { syncSlider('autoPitch', v); },
+		// preset list changed (a combined default.js was opened / pasted).
+		setPresets: rebuildPresetRow,
 		// relabel the open menu's anim-speed slider prefix (color mode or trace
 		// mode changed while the menu is open).
 		refreshAnimMode: function () {

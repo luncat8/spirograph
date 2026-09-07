@@ -80,8 +80,11 @@
 	<script src="js/render.js"></script>
 	<script src="js/camera3.js"></script>
 	<script src="js/gui.js"></script>
-	<!-- optional startup scene: drop a saved scene (spirograph.js) next to this
-	     file as default.js and it loads whenever there is no autosave -->
+	<!-- startup scene + preset list: default.js sets SETTINGS (the scene that
+	     loads whenever there is no autosave) and PRESETS (the panel's preset
+	     dropdown). drop scene files saved by the app next to this file and run
+	     presets_combine.py - they are merged into default.js and the consumed
+	     files are renamed *.delete-me -->
 	<script src="default.js"></script>
 	<script src="js/main.js"></script>
 </body>

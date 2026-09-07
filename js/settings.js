@@ -23,14 +23,20 @@
 		samplesPerTurn: { min: 20, max: 2000, step: 20, def: 200 },
 		// max MUST equal Gear.CAP (js/gear.js) - the ring buffer hard ceiling.
 		// floor is gear.js applyTrailCap's hard minimum; min is the slider's.
-		trailCap: { min: 100, max: 40000, step: 10, floor: 10 }
+		trailCap: { min: 100, max: 40000, step: 10, floor: 10 },
+		// 3D auto-camera speeds (rad/s). float: clamp keeps fractions; floor 0
+		// = the axis-off sentinel (the log sliders prepend it). the checkbox
+		// itself (autoRotate) is session-only, the speeds are preferences.
+		autoYaw: { min: 0.01, max: 3, def: 0.2, floor: 0, float: true },
+		autoPitch: { min: 0.01, max: 3, def: 0, floor: 0, float: true }
 	};
 
 	// round + clamp a user/loaded value for a bounded field.
 	function clamp(field, v) {
 		var L = LIMITS[field];
 		var lo = L.floor != null ? L.floor : L.min;
-		var x = Math.round(v || 0);
+		var x = L.float ? +v : Math.round(+v || 0);
+		if (!isFinite(x)) x = L.def;
 		return Math.max(lo, Math.min(L.max, x));
 	}
 
@@ -241,6 +247,27 @@
 			get: function (A) { return A.sphereParams; },
 			clean: function (v) { return sanitizeSphereParams(v); },
 			apply: function (s, A, GUI) { A.sphereParams = s.sphereParams; GUI.setSphereParams(s.sphereParams); A.markDirty(); }
+		},
+		{
+			// 3D auto-camera speeds (rad/s, log sliders; 0 = that axis stays
+			// still). no apply recipe work beyond the field + GUI sync: camera
+			// motion is continuous while the (session-only) toggle is on.
+			key: 'autoYaw', def: LIMITS.autoYaw.def, persist: true,
+			get: function (A) { return A.autoYaw; },
+			clean: function (v) {
+				if (typeof v !== 'number' || !isFinite(v)) return undefined;
+				return clamp('autoYaw', v);
+			},
+			apply: function (s, A, GUI) { A.autoYaw = s.autoYaw; GUI.setAutoYaw(s.autoYaw); }
+		},
+		{
+			key: 'autoPitch', def: LIMITS.autoPitch.def, persist: true,
+			get: function (A) { return A.autoPitch; },
+			clean: function (v) {
+				if (typeof v !== 'number' || !isFinite(v)) return undefined;
+				return clamp('autoPitch', v);
+			},
+			apply: function (s, A, GUI) { A.autoPitch = s.autoPitch; GUI.setAutoPitch(s.autoPitch); }
 		}
 	];
 

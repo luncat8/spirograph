@@ -273,3 +273,27 @@
 - index-mapped sliders (`sliderRow(..., values)`) must hold a strictly
   increasing list: duplicate entries fire input events with an unchanged
   value.
+
+## presets via default.js (0.7.5)
+- a file:// page cannot list its own directory, so a runtime "preset folder"
+  is impossible without a server. ship the list inside default.js instead:
+  presets_combine.py (run by hand from the app dir) merges the scene files
+  saved next to index.html into default.js's PRESETS and renames the
+  consumed files to *.delete-me - the rename IS the "already combined"
+  marker, no sidecar state.
+- the saved FILE NAME is the preset label, so make the save button name
+  files descriptively (2d/3d + state flags + timestamp) instead of a generic
+  spirograph.js; the label then tells the user what the preset is.
+- a JS scene file embeds its JSON in `var S = ...;` - extract it with a
+  string-aware brace scanner (braces inside strings/escapes otherwise
+  unbalance the scan), and let `null` parse as None: the combiner itself
+  writes `var S = null;` when no startup scene exists, so the reader must
+  round-trip the writer's every output.
+- log-scale sliders: ONE ladder helper (min..max, n steps, round, dedup)
+  feeding the existing index-slider mechanism; callers prepend 0 when the
+  value can mean "off" (auto-camera axis speeds). round rates to 3
+  significant digits, not fixed decimals, or the low end collapses
+  (0.0107 and 0.0114 both display as 0.011) - same for the value formatter.
+- a preset select should reset to its placeholder option after every pick:
+  picking the same entry twice in a row never fires a second change event
+  otherwise.

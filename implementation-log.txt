@@ -537,6 +537,76 @@ REWRITES 0.6 (the plane-sweep / global spin model was rejected by the user).
   ring at 60 fps drawn in full, 60 ms frames shed detail down to the floor,
   detail returns after fast frames, debug override pins it).
 
+## done (0.7.5) - plan 0.7.5-presets-camera.md implemented (presets + auto-camera)
+- presets:
+  - save button (d) writes a descriptively named file instead of
+    spirograph.js: `<2d|3d>[-tails][-whole]-yy-mm-dd-hh-mm-ss.js` (dimension,
+    drawTrails, whole mode, timestamp) - the name IS the preset label, so it
+    carries the scene's identity. App.sceneFileName exposed for tests.
+  - presets_combine.py (new, repo root): run from the app directory; scans
+    the CWD for scene files (*.js SETTINGS modules + raw *.json with a gears
+    array; default.js, *.delete-me and non-scenes skipped), appends them to
+    default.js's PRESETS (name = file stem, same-stem files collapse with
+    the later replacing), preserves the startup scene SETTINGS, rewrites
+    default.js in the SETTINGS+PRESETS format and renames every consumed
+    file to <name>.js.delete-me (the rename is the "already combined"
+    marker). string-aware brace scanner extracts the embedded JSON; a
+    missing default.js is created (S = null -> app falls back to its
+    built-in default scene); a mangled one exits with a clear message.
+  - default.js format: one IIFE publishing root.SETTINGS + root.PRESETS
+    (node require gets {SETTINGS, PRESETS}); the shipped file was converted
+    with the script's own writer (byte-stable on re-runs), scene unchanged.
+  - main.js: presetList() filters window.PRESETS to {name, scene} pairs;
+    App.presets + App.loadPreset(name) (full loadObject path - gears, app
+    bag, dim, camera restored exactly as saved; toast on load / not-found).
+    loadSceneText calls GUI.setPresets() after evaluating a js module, so
+    OPENING a combined default.js adopts its preset list.
+  - gui.js: preset dropdown (select with a 'load...' placeholder that is
+    restored after every pick, so the same preset re-selects) in a
+    permanent host above the copy/save/open/paste buttons; hidden when
+    there are no presets; help line pointing at presets_combine.py.
+- auto-camera:
+  - App.autoYaw / App.autoPitch (rad/s; defaults 0.2 / 0), settings.js
+    LIMITS entries (min 0.01, max 3, floor 0 = the axis-off sentinel, float
+    clamp) + APP_SCHEMA entries (persisted in the app bag; the autoRotate
+    checkbox stays session-only). App.setAutoYaw / setAutoPitch.
+  - frame(): auto-rotate orbits at App.autoYaw and drifts pitch at
+    App.autoPitch with a direction flip at +-PITCH_LIMIT (a nodding camera
+    bounces off the pole instead of pinning at it).
+  - gui.js: 'auto yaw' / 'auto pitch' rows in the 3D section - index
+    sliders over [0].concat(logLadder(0.01, 3, 100, sig3)).
+- log-scale slider dedup (gui.js):
+  - logLadder(min, max, n, round): one ladder for max period, trail length
+    and the two speed sliders (Math.round for counts, sig3 = 3 significant
+    digits for rates), duplicates dropped. the two ad-hoc pow(i/99, 1.5)
+    loops are gone; the ladders are now pure log (same endpoints/monotony).
+  - fmt(v) = 3 significant digits (toPrecision) - fixed decimals flattened
+    the low end of a log scale (0.0107 read as 0.011).
+  - syncSlider(key, v) replaces the per-field slider-sync bodies; all
+    GUI.set* slider setters are one-liners through it.
+- tests (270 checks, +41):
+  - fixed a stale test: 'trail slider sets the per-pencil cap' assigned a
+    raw point count to the 0.5.5 index slider (real browsers clamp the
+    assignment, the node stub does not) - it now picks a ladder position.
+  - stub-dom: Blob/URL stubs (downloadScene runs headless), boot({settings,
+    presets}) injects what a default.js script tag would publish.
+  - new: sceneFileName combos + downloadScene end-to-end (anchor name,
+    SETTINGS-module body), startup scene from window.SETTINGS, preset
+    dropdown (placeholder/options, change event loads gears+dim+mode,
+    placeholder restored, not-found toast, absent without presets), shipped
+    default.js shape, auto-camera schema/clamp/ladder/behavior (default
+    drift, faster yaw, pitch bounce inside the clamp, autosave roundtrip,
+    reset), presets_combine.py end-to-end in a temp dir (merge, names from
+    filenames, *.delete-me renames, non-scenes untouched, idempotent second
+    run, missing-default.js case) - skipped gracefully without python.
+  - verified in headless chromium (sparticuz + swiftshader): app boots
+    file://, preset dropdown lists the combined presets, a real DOM change
+    event loads the 3D whole preset (dim/mode/gears restored), auto yaw /
+    auto pitch sliders present with 0-first ladders, two-axis auto-camera
+    drifts pitch inside the clamp, save button downloads the auto-named
+    file, both presets visibly draw colored trails (pngjs pixel analysis
+    of screenshots), zero console errors.
+
 ## next
 - optional polish (from the 0.6 plan's future-work list): real near-plane
   segment clipping (currently edge-clamped streaks when inside the figure), 
