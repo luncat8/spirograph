@@ -252,3 +252,24 @@
   @sparticuz/chromium ships a binary in the npm tarball; extract its
   al2023.tar.br libs and run with LD_LIBRARY_PATH=<libs>:/tmp and
   --use-angle=swiftshader.
+
+## adaptive vs benchmarked quality (0.7.4)
+- do not size a "draw less while the user drags" budget from a one-shot device
+  benchmark: it decimates by scene size even when the machine renders the full
+  ring inside a frame. time the actual gesture frames and shed detail only
+  after one overruns.
+- CPU submit time alone under-reports a GL frame (the GPU runs async). take
+  max(CPU time, interval between two consecutive rendered gesture frames) -
+  and ignore intervals over ~200 ms, which are tab switches, not slow draws.
+- rAF intervals are vsync-quantized (~16.7 ms at 60 Hz), so a "frame was fast"
+  test cannot use a threshold below that. count a RUN of non-slow frames
+  before giving detail back instead.
+
+## no-op edits must not restart a bake (0.7.4)
+- quantized controls (a search ceiling, a resolution capped by a point budget)
+  map whole slider ranges onto the same result. compare the RESULT signature
+  before restarting work whose first act is to clear the canvas - the user
+  sees the flicker, not the recomputation.
+- index-mapped sliders (`sliderRow(..., values)`) must hold a strictly
+  increasing list: duplicate entries fire input events with an unchanged
+  value.

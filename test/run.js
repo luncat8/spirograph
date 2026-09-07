@@ -843,8 +843,11 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	}
 	var mp = findRow('max period');
 	ok(!!mp, 'panel has a max period slider');
-	ok(String(mp.input.min) === '0' && String(mp.input.max) === '99', 'max period slider uses logarithmic index range');
-	ok(mp.values && mp.values.length === 100, 'max period slider has 100 logarithmic steps');
+	ok(String(mp.input.min) === '0' && String(mp.input.max) === String(mp.values.length - 1),
+		'max period slider uses logarithmic index range');
+	var mpRising = mp.values.length > 50;
+	for (var mvi = 1; mvi < mp.values.length; mvi++) if (mp.values[mvi] <= mp.values[mvi - 1]) mpRising = false;
+	ok(mpRising, 'max period steps are strictly increasing (no duplicate ceilings)', mp.values.length);
 	ok(mp.values[0] === Settings.LIMITS.maxPeriod.min, 'first mapped value is min');
 	ok(mp.values[mp.values.length - 1] === Settings.LIMITS.maxPeriod.max, 'last mapped value is max');
 	var det = findRow('detail');
@@ -1053,6 +1056,100 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	App.resetScene();
 	w.tick(5, 16);
 	ok(App.sphereShader === 'off', 'full scene reset leaves spheres off');
+})();
+
+// ---- whole-mode sliders never re-bake an identical figure -----------
+// max period is a search CEILING and detail is quantized (point budget, ring
+// cap), so long stretches of either slider map to the very same curve. a
+// re-bake there clears the canvas and redraws the same pixels: a flicker for
+// no reason. bakes are counted through Gear.startWhole (main.js resolves it
+// off the global Gear object at call time).
+(function wholeSlidersSkipNoopBakes() {
+	App.resetScene();
+	App.setMode('whole');
+	App.recomputeWhole(true);
+	w.tick(60, 16);
+	ok(!App.currentPeriod || App.currentPeriod.turns > 0, 'whole mode has a detected period');
+	var realStart = w.Gear.startWhole, bakes = 0;
+	w.Gear.startWhole = function () { bakes++; return realStart.apply(this, arguments); };
+	function bakesFor(fn) { bakes = 0; fn(); w.flushTimers(1000); w.tick(60, 16); return bakes; }
+
+	var mp0 = App.maxPeriod;
+	ok(bakesFor(function () { App.setMaxPeriod(mp0); }) === 0, 're-setting max period to its current value does nothing');
+	// a much lower ceiling that still exceeds the detected period: same figure.
+	var above = Math.max(Settings.LIMITS.maxPeriod.min, App.currentPeriod.turns * 2);
+	ok(bakesFor(function () { App.setMaxPeriod(above); }) === 0,
+		'a different ceiling that yields the same period does not re-bake', App.maxPeriod + ' vs period ' + App.currentPeriod.turns);
+	ok(App.maxPeriod === Settings.clamp('maxPeriod', above), 'the ceiling value is still stored', App.maxPeriod);
+	// a ceiling below the closure cuts the figure short: real change, real bake.
+	var cutBakes = bakesFor(function () { App.setMaxPeriod(Settings.LIMITS.maxPeriod.min); });
+	ok(cutBakes > 0, 'a ceiling below the closure re-bakes', cutBakes);
+	App.setMaxPeriod(mp0); w.flushTimers(1000); w.tick(60, 16);
+
+	var sp0 = App.samplesPerTurn;
+	ok(bakesFor(function () { App.setSamplesPerTurn(sp0); }) === 0, 're-setting detail to its current value does nothing');
+	ok(bakesFor(function () { App.setSamplesPerTurn(sp0 + Settings.LIMITS.samplesPerTurn.step); }) > 0, 'a real detail change re-bakes');
+	// above the per-pencil point cap every detail value gives the same sample
+	// count, so the second move must be a no-op.
+	App.setSamplesPerTurn(Settings.LIMITS.samplesPerTurn.max);
+	w.flushTimers(1000); w.tick(120, 16);
+	var capped = App.allGears.filter(function (g) { return g.count > 0; })[0];
+	var atCap = capped && capped.count >= w.Gear.CAP - 1;
+	if (atCap) ok(bakesFor(function () { App.setSamplesPerTurn(Settings.LIMITS.samplesPerTurn.max - Settings.LIMITS.samplesPerTurn.step); }) === 0,
+		'detail moves that clamp to the same sample count do not re-bake');
+	else ok(true, 'detail cap case not reachable with this scene (skipped)');
+	w.Gear.startWhole = realStart;
+	App.setMode('animate');
+	App.resetScene();
+	w.flushTimers(1000);
+})();
+
+// ---- gesture draw quality is measured, not predicted -----------------
+// orbiting in 3D used to fall back to the decimated "simple geometry" draw
+// for every ring above a device benchmark, even at 60 fps. detail is now shed
+// only after a gesture frame actually costs more than 20 ms, and taken back
+// once frames are fast again.
+(function gestureQualityFollowsFrameTime() {
+	App.resetScene();
+	App.setDim('3d');
+	var g = App.roots[0].children[0];
+	App.setTrailCap(g, 20000); App.onGearParam(g, 'trail');
+	w.tick(400, 16);
+	App.setAutoRotate(true);                       // camera motion == gesture path
+	w.tick(5, 16);
+	var q = App.gestureQuality();
+	ok(q.budget === 0 && q.drawn === q.segs, 'fast camera frames draw the full trail', JSON.stringify(q));
+
+	// a big ring at 60 fps is still drawn in full (the old device benchmark
+	// decimated by ring size alone). fill it directly instead of simulating
+	// 14k frames.
+	var col = [1, 0.5, 0.2];
+	for (var i = 0; i < 14000; i++)
+		w.Gear.pushPoint(g, Math.cos(i * 0.01) * 2, Math.sin(i * 0.013) * 2, Math.sin(i * 0.007), col);
+	w.tick(4, 16);
+	var big = App.gestureQuality();
+	var segs = big.segs;
+	ok(segs > 8000, 'test ring is large enough to decimate', segs);
+	ok(big.budget === 0 && big.drawn === segs, 'a large ring at 60 fps is still drawn in full', JSON.stringify(big));
+
+	// slow frames: the rAF interval is the visible cost (the GPU runs async).
+	w.tick(6, 60);                                 // 60 ms per frame
+	var slow = App.gestureQuality();
+	ok(slow.budget > 0 && slow.budget < segs, 'slow camera frames shed detail', JSON.stringify(slow));
+	ok(slow.budget >= 8000, 'decimation never goes below the shape floor', slow.budget);
+
+	w.tick(60, 16);                                // fast again: quality returns
+	ok(App.gestureQuality().budget === 0, 'full detail comes back once frames are fast', JSON.stringify(App.gestureQuality()));
+
+	// debug override still pins the budget and disables adaptation.
+	w.SPIRO_GESTURE_SEG_BUDGET = 5000;
+	w.tick(4, 60);
+	ok(App.gestureQuality().budget === 5000, 'debug override pins the gesture budget', App.gestureQuality().budget);
+	delete w.SPIRO_GESTURE_SEG_BUDGET;
+	App.setAutoRotate(false);
+	App.setDim('2d');
+	App.resetScene();
+	w.tick(5, 16);
 })();
 
 console.log((fail ? 'FAILED' : 'OK') + ': ' + pass + ' passed, ' + fail + ' failed');

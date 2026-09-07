@@ -1,5 +1,27 @@
 # CHANGELOG
 
+## 0.7.4 - no-op slider bakes removed, gesture quality is measured
+- **fix: the whole-mode `max period` and `detail` sliders flickered the canvas
+  even when the figure could not change.** both are quantized downstream (max
+  period is only a search CEILING, detail is capped by the point budget and
+  the ring cap), so long stretches of either slider map to the identical
+  curve - yet every tick restarted the bake, which clears the overlay and
+  redraws the same pixels. a bake signature (detected turns + closure gap +
+  sample count + dim) is now compared before re-baking, and both setters
+  return early when the clamped value did not move. the max-period ladder also
+  dropped its duplicate low-end entries (several slider indices rounded to the
+  same ceiling and fired an input event with an unchanged value).
+- **fix: moving the 3D camera dropped the trail to the coarse "simple
+  geometry" polyline even at 60 fps.** the decimation budget used to come from
+  a one-shot device benchmark at startup, so any ring above that size was
+  simplified for the whole gesture regardless of the real cost. gesture frames
+  are now timed (CPU submit time or the rAF interval, whichever is larger -
+  the GPU is async): full detail is kept until a frame actually exceeds 20 ms,
+  the budget is then scaled to what fitted in 20 ms (never below 8k segments),
+  and it grows back - up to unlimited - after a run of fast frames. the init
+  benchmark is gone (faster startup); `window.SPIRO_GESTURE_SEG_BUDGET` still
+  pins the budget for debugging (<= 0 disables decimation entirely).
+
 ## 0.7.3 - glass shader selector (ray-traced shells), root gear always drawn
 - the **glass spheres** checkbox is replaced by a **glass shader** selector:
   `off` / `hollow glass bubbles` / `analytic layered glass`. both are ports

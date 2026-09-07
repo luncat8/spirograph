@@ -503,6 +503,40 @@ REWRITES 0.6 (the plane-sweep / global spin model was rejected by the user).
   the root). gone with the ray trace - verified headless in 2D, 3D and with
   the camera inside the root sphere.
 
+## done (0.7.4) - no-op bakes and measured gesture quality
+- whole-mode sliders no longer re-bake an identical figure:
+  - main.js `bakeSig` {turns, err, n, dim} records what the last started bake
+    converges to (the FULL-resolution n, so the drag-draft path does not
+    confuse it); cleared when whole mode is left.
+  - `recomputeWholeIfChanged()` runs detectPeriod + wholeSampleCount and only
+    calls recomputeWhole when that signature differs. setMaxPeriod /
+    setSamplesPerTurn return early on an unchanged clamped value and otherwise
+    go through it. every other caller (scene edits, mode switch, load, reset)
+    still calls App.recomputeWhole directly - geometry changes do not show up
+    in the signature.
+  - gui.js: the max-period value ladder drops duplicates (the low end rounded
+    several indices to 4, and dragging across them fired input events with an
+    unchanged value -> a bake of the same curve).
+- gesture draw quality is measured instead of predicted:
+  - removed tuneGestureBudget() and the static GESTURE_SEG_BUDGET(_3D); the
+    init-time synthetic benchmark decimated by ring size alone, which is why
+    orbiting in 3D showed coarse polylines on a machine that renders the same
+    ring at 60 fps.
+  - new controller: gestureSegBudget() (0 = full detail),
+    gestureFrameMs(now, cpuMs) = max(CPU submit time, rAF interval; intervals
+    > 200 ms ignored) and noteGestureFrame(ms) - shrink to
+    lastTrailDrawn * 20/ms (floor GESTURE_SEG_FLOOR 8000) when a gesture frame
+    exceeds GESTURE_SLOW_MS 20, grow x1.5 after GESTURE_RELAX_FRAMES 12 fast
+    frames, unlimited again once the whole ring fits. drawTrails2D/3D publish
+    lastTrailSegs / lastTrailDrawn; frame() times only gesture renders.
+    window.SPIRO_GESTURE_SEG_BUDGET still pins it (<= 0 = never decimate).
+    App.gestureQuality() exposes {budget, segs, drawn} for tests.
+- test/run.js: 229 assertions (+15) - bake counting through Gear.startWhole
+  (no-op ceiling / detail moves start zero bakes, a real change starts one),
+  strictly increasing max-period ladder, and the gesture controller (large
+  ring at 60 fps drawn in full, 60 ms frames shed detail down to the floor,
+  detail returns after fast frames, debug override pins it).
+
 ## next
 - optional polish (from the 0.6 plan's future-work list): real near-plane
   segment clipping (currently edge-clamped streaks when inside the figure), 

@@ -65,12 +65,21 @@
 	var Rseg = R.seg, Rflush = R.flush, Rdot = R.dot;
 	var RvCount = R.vCount, RmaxVert = R.maxVert;
 
-	// gesture-draw segment budget: auto-tuned at init by tuneGestureBudget() to
-	// the largest ring size this device can push inside GESTURE_FRAME_SLICE_MS.
-	// scenes exceeding it are decimated only while a pan/zoom gesture is active.
-	var GESTURE_SEG_BUDGET = 60000;      // provisional; replaced at init
-	var GESTURE_SEG_BUDGET_3D = 48000;   // 3D gesture path (projection adds cost)
-	var GESTURE_FRAME_SLICE_MS = 8;      // target ms per frame for gesture draw
+	// gesture-draw quality is MEASURED, not predicted: a pan / orbit / dolly
+	// frame draws the full trail until a frame really costs more than
+	// GESTURE_SLOW_MS, then the segment budget is scaled to what fitted in that
+	// time and grows back once frames are fast again. the previous model
+	// benchmarked the device once at init and decimated every ring above that
+	// size, so merely orbiting a mid-size scene showed coarse polylines even
+	// while running at 60 fps.
+	var GESTURE_SLOW_MS = 20;            // above this a gesture frame sheds detail
+	var GESTURE_RELAX_FRAMES = 12;       // fast frames needed before taking it back
+	var GESTURE_SEG_FLOOR = 8000;        // never decimate below this (shape survives)
+	var gestureBudget = 0;               // 0 = unlimited (full detail)
+	var gestureFastRun = 0;              // consecutive fast gesture frames
+	var gestureFrameT = 0;               // rAF stamp of the previous gesture frame
+	var lastTrailSegs = 0;               // segments the last trail pass considered
+	var lastTrailDrawn = 0;              // segments it actually pushed
 
 	var last = 0;
 	var panning = false;
@@ -352,12 +361,19 @@
 	var lastWholeStart = 0;
 	var refineTimer = 0;
 
+	// signature of the figure the last bake was started for. the baked curve is
+	// a function of (scene, detected period, sample count); the two whole-mode
+	// sliders only feed the last two, so when neither moves the result would be
+	// pixel-identical - and restarting the job would clear the canvas and redraw
+	// the same curve, which is the flicker the sliders used to produce.
+	var bakeSig = { turns: -1, err: -1, n: -1, dim: '' };
+
 	// `force` skips the drag-draft heuristic and bakes at full resolution
 	// (used by the refine timer and by the test harness).
 	App.recomputeWhole = function (force) {
 		wholeJob = null;
 		if (refineTimer) { clearTimeout(refineTimer); refineTimer = 0; }
-		if (App.mode !== 'whole') return;
+		if (App.mode !== 'whole') { bakeSig.n = -1; return; }
 		var now = Date.now();
 		var draft = !force && (now - lastWholeStart) < DRAFT_MS;
 		lastWholeStart = now;
@@ -365,6 +381,10 @@
 		var period = Gear.detectPeriod(App.roots, App.maxPeriod, null, App.dim === '3d');
 		App.currentPeriod = period;
 		var n = wholeSampleCount(period);
+		// the signature records the FINAL resolution: a draft is always followed
+		// by the refine timer, so the figure this call converges to is the full-n one.
+		bakeSig.turns = period.turns; bakeSig.err = period.err;
+		bakeSig.n = n; bakeSig.dim = App.dim;
 		if (draft) {
 			n = Math.max(64, Math.round(n / 4));
 			refineTimer = setTimeout(function () {
@@ -376,6 +396,25 @@
 		App.requestRender();
 		GUI.setPeriod(period, 0, wholeJob.total + 1);
 	};
+
+	// re-bake only when the knob that moved actually changes the figure. used by
+	// the max-period / detail sliders: both are clamped and quantized downstream
+	// (closure search ceiling, point budget, ring cap), so long stretches of the
+	// slider map to the very same curve. scene edits never take this path - they
+	// change the geometry without touching period or sample count.
+	// returns true when a bake was started.
+	function recomputeWholeIfChanged() {
+		if (App.mode !== 'whole') return false;
+		// bakeSig always describes the figure the current (possibly still
+		// running or draft-then-refine) job converges to, so an in-flight bake
+		// needs no special case.
+		var period = Gear.detectPeriod(App.roots, App.maxPeriod, null, App.dim === '3d');
+		var n = wholeSampleCount(period);
+		if (bakeSig.dim === App.dim && bakeSig.turns === period.turns &&
+			bakeSig.err === period.err && bakeSig.n === n) return false;
+		App.recomputeWhole();
+		return true;
+	}
 
 	function nowMs() {
 		return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
@@ -397,15 +436,19 @@
 	// the closure search ceiling: how many turns detectPeriod may spend before
 	// it settles for the best approximate closure it found.
 	App.setMaxPeriod = function (v) {
-		App.maxPeriod = Settings.clamp('maxPeriod', v);
-		if (App.mode === 'whole') App.recomputeWhole();
+		var mp = Settings.clamp('maxPeriod', v);
+		if (mp === App.maxPeriod) return;
+		App.maxPeriod = mp;
+		recomputeWholeIfChanged();
 	};
 
 	// whole-mode bake resolution (points per turn of the root). this - not the
 	// per-pencil trail length - is what makes a baked curve smooth or faceted.
 	App.setSamplesPerTurn = function (v) {
-		App.samplesPerTurn = Settings.clamp('samplesPerTurn', v);
-		if (App.mode === 'whole') App.recomputeWhole();
+		var sp = Settings.clamp('samplesPerTurn', v);
+		if (sp === App.samplesPerTurn) return;
+		App.samplesPerTurn = sp;
+		recomputeWholeIfChanged();
 	};
 
 	// ---- 3D mode API ----
@@ -1419,51 +1462,50 @@
 		}
 	}
 
-	// one-time benchmark at init: find the largest ring size this device can
-	// push through the exact gesture draw path inside GESTURE_FRAME_SLICE_MS.
-	// scenes above the resulting budget are decimated only during gestures.
-	function tuneGestureBudget() {
-		if (typeof window.SPIRO_GESTURE_SEG_BUDGET === 'number') {
-			GESTURE_SEG_BUDGET = Math.max(1000, window.SPIRO_GESTURE_SEG_BUDGET | 0);
+	// the budget handed to the gesture trail draw. 0 = full detail. a debug
+	// override pins it (window.SPIRO_GESTURE_SEG_BUDGET, <= 0 disables
+	// decimation entirely) and switches the adaptive controller off.
+	function gestureSegBudget() {
+		var ov = window.SPIRO_GESTURE_SEG_BUDGET;
+		if (typeof ov === 'number') return ov > 0 ? Math.max(1000, ov | 0) : 0;
+		return gestureBudget;
+	}
+
+	// cost of one gesture frame: CPU submit time OR the interval to the previous
+	// gesture frame, whichever is larger. the GPU runs async, so an expensive
+	// draw often shows up only as a long gap before the next rAF callback; the
+	// interval is only meaningful between two consecutive rendered gesture
+	// frames (gestureFrameT is cleared otherwise).
+	function gestureFrameMs(now, cpuMs) {
+		var wall = gestureFrameT ? now - gestureFrameT : 0;
+		gestureFrameT = now;
+		if (wall > 200) wall = 0;        // tab switch / debugger, not a slow draw
+		return cpuMs > wall ? cpuMs : wall;
+	}
+
+	// feedback loop: shrink the budget to what fitted inside GESTURE_SLOW_MS as
+	// soon as a frame overruns, grow it back after a run of fast frames and drop
+	// the limit completely once the whole ring fits again.
+	function noteGestureFrame(ms) {
+		if (typeof window.SPIRO_GESTURE_SEG_BUDGET === 'number') return;
+		if (ms > GESTURE_SLOW_MS) {
+			gestureFastRun = 0;
+			if (lastTrailDrawn <= GESTURE_SEG_FLOOR) return;   // trail is not the cost
+			var fit = Math.max(GESTURE_SEG_FLOOR, Math.floor(lastTrailDrawn * GESTURE_SLOW_MS / ms));
+			gestureBudget = gestureBudget > 0 ? Math.min(gestureBudget, fit) : fit;
 			return;
 		}
-		// synthetic ring laid out like a real gear ring (xy rgb per point),
-		// smooth enough that no join discs fire during the measurement.
-		var TEST_CAP = 200000;
-		var testRing = new Float32Array(TEST_CAP * 5);
-		for (var i = 0; i < TEST_CAP; i++) {
-			var t = i / TEST_CAP;
-			testRing[i * 5]     = Math.cos(t * 200) * 2;
-			testRing[i * 5 + 1] = Math.sin(t * 137) * 2;
-			testRing[i * 5 + 2] = 0.5 + 0.5 * Math.cos(t);
-			testRing[i * 5 + 3] = 0.5 + 0.5 * Math.sin(t);
-			testRing[i * 5 + 4] = 0.8;
-		}
-		var fakeGear = { ring: testRing, cap: TEST_CAP, head: 0, count: 0 };
-		var samples = [8000, 16000, 32000, 64000, 96000, 128000, 160000, 200000];
-		var bestUnder = 10000;   // floor: below this the decimated trace looks sparse
-		var MAX_SAFE = Math.floor(RmaxVert / 6) - 16;   // leave headroom for flush
-		for (var si = 0; si < samples.length; si++) {
-			var n = samples[si];
-			if (n > MAX_SAFE) n = MAX_SAFE;
-			fakeGear.count = n + 1;
-			R.begin(BG);
-			var t0 = performance.now();
-			for (var rep = 0; rep < 4; rep++) {
-				drawGearSegments(fakeGear, 0, n, 1.5 * App.dpr);
-				Rflush();
-			}
-			var perFrame = (performance.now() - t0) / 4;
-			if (perFrame <= GESTURE_FRAME_SLICE_MS) bestUnder = n;
-			else break;
-		}
-		GESTURE_SEG_BUDGET = bestUnder;
-		// 3D gesture path also projects each point (2 trig + mat multiply), so
-		// budget a bit lower; override applies to both.
-		GESTURE_SEG_BUDGET_3D = Math.max(1000, Math.floor(bestUnder * 0.8));
-		if (typeof window.SPIRO_GESTURE_SEG_BUDGET === 'number')
-			GESTURE_SEG_BUDGET_3D = GESTURE_SEG_BUDGET;
+		if (!gestureBudget) return;
+		if (++gestureFastRun < GESTURE_RELAX_FRAMES) return;
+		gestureFastRun = 0;
+		gestureBudget = Math.floor(gestureBudget * 1.5);
+		if (gestureBudget >= lastTrailSegs) gestureBudget = 0;   // full detail again
 	}
+
+	// test / debug handle on the adaptive state.
+	App.gestureQuality = function () {
+		return { budget: gestureSegBudget(), segs: lastTrailSegs, drawn: lastTrailDrawn };
+	};
 
 	// gear skeleton: draws circles and/or dial hands depending on the
 	// independent toggles. Both may be on at once.
@@ -1761,6 +1803,8 @@
 		}
 		var decimate = budget > 0 && totalSegs > budget;
 		var perGearBudget = Math.max(1, Math.floor(budget / Math.max(1, pencilGears)));
+		lastTrailSegs = totalSegs;
+		lastTrailDrawn = decimate ? budget : totalSegs;
 		for (var gj = 0; gj < App.allGears.length; gj++) {
 			var g3 = App.allGears[gj];
 			if (!(g3.pencil.c1.on || g3.pencil.c2.on) || g3.stride !== 6 || g3.count < 2) continue;
@@ -1898,10 +1942,11 @@
 	//     / pan / fit / auto-rotate / pivot change) invalidates the cache.
 	//   overlay OFF ("redraw"): the whole ring is re-projected and redrawn
 	//     from scratch every render (bounded by the trail cap).
-	// during an active gesture both modes draw directly (decimated when the
-	// ring is bigger than the tuned budget) and the overlay re-bakes once on
-	// settle. the 3D variant projects the world ring through the camera into
-	// projScratch first and draws under a true identity transform.
+	// during an active gesture both modes draw directly (full detail unless a
+	// frame measured slower than GESTURE_SLOW_MS, see noteGestureFrame) and
+	// the overlay re-bakes once on settle. the 3D variant projects the world
+	// ring through the camera into projScratch first and draws under a true
+	// identity transform.
 
 	// the cached overlay is only valid for the view it was baked with. every
 	// code path that moves the view is supposed to invalidate it (gesture
@@ -1966,6 +2011,8 @@
 		}
 		var decimate = budget > 0 && totalSegs > budget;
 		var perGearBudget = Math.max(1, Math.floor(budget / Math.max(1, pencilGears)));
+		lastTrailSegs = totalSegs;
+		lastTrailDrawn = decimate ? budget : totalSegs;
 		for (var i = 0; i < App.allGears.length; i++) {
 			var g = App.allGears[i];
 			if (!(g.pencil.c1.on || g.pencil.c2.on)) continue;
@@ -2035,7 +2082,7 @@
 		}
 		if (isGestureActive()) {               // gesture: direct draw at the live view
 			R.begin(BG);
-			drawTrailsDirect(is3, is3 ? GESTURE_SEG_BUDGET_3D : GESTURE_SEG_BUDGET);
+			drawTrailsDirect(is3, gestureSegBudget());
 			drawSpherePass();
 			drawGuides(is3);
 			return;
@@ -2111,7 +2158,18 @@
 			if (App.cam) Camera3.orbitBy(App.cam, dt * 0.2, 0);
 			App.requestRender();
 		}
-		if (App.needsRender) { renderScene(); App.needsRender = false; }
+		if (App.needsRender) {
+			// gesture frames feed the adaptive quality controller; everything
+			// else renders untimed (a cached blit or a one-off bake).
+			var gest = isGestureActive();
+			if (!gest) { gestureFrameT = 0; renderScene(); }
+			else {
+				var t0 = nowMs();
+				renderScene();
+				noteGestureFrame(gestureFrameMs(now, nowMs() - t0));
+			}
+			App.needsRender = false;
+		}
 		requestAnimationFrame(frame);
 	}
 
@@ -2119,11 +2177,6 @@
 		App.canvas = document.getElementById('c');
 		try { R.init(App.canvas); }
 		catch (e) { document.body.innerHTML = '<p style="color:#fff;padding:20px">WebGL2 error: ' + e.message + '</p>'; return; }
-
-		// one-time auto-tune of the gesture-draw segment budget to this device.
-		// runs before the first scene is loaded / painted, so the synthetic
-		// benchmark draws are invisible (blank canvas).
-		tuneGestureBudget();
 
 		// restore autosave, else default.js (SETTINGS module next to index.html),
 		// else the built-in default scene.

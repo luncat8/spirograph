@@ -261,10 +261,15 @@
 		wholeBox = el('div');
 		periodLine = el('div', 'sub', '');
 		wholeBox.appendChild(periodLine);
+		// log-ish ladder of ceilings. duplicates are dropped: at the low end the
+		// curve rounds several indices to the same value, and a drag across them
+		// used to fire onInput with an unchanged value (a re-bake of the identical
+		// figure - visible as a canvas flicker).
 		var mpL = Settings.LIMITS.maxPeriod;
 		var mpVals = [];
 		for (var i = 0; i < 100; i++) {
-			mpVals.push(Math.round(4 * Math.pow(1000, Math.pow(i / 99, 1.5))));
+			var mv = Math.round(4 * Math.pow(1000, Math.pow(i / 99, 1.5)));
+			if (mpVals[mpVals.length - 1] !== mv) mpVals.push(mv);
 		}
 		wholeBox.appendChild(sliderRow('max period', mpL.min, mpL.max, mpL.step, app.maxPeriod, function (v) {
 			app.setMaxPeriod(v);
