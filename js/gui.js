@@ -189,8 +189,6 @@
 		checkboxRefs = {};
 		sliderRefs = {};
 		colorRefs = {};
-		var title = el('div', 'ptitle', 'Spirograph');
-		panel.appendChild(title);
 
 		var btns = el('div', 'btns');
 		pauseBtn = buttonRow(app.paused ? 'play (space)' : 'pause (space)', function () { app.togglePause(); });
@@ -498,12 +496,18 @@
 
 		if (!whole) {
 			var tcL = Settings.LIMITS.trailCap;
+			var tcVals = [];
+			for (var i = 0; i < 100; i++) {
+				var tv = Math.round(tcL.min * Math.pow(tcL.max / tcL.min, Math.pow(i / 99, 1.5)));
+				if (tcVals[tcVals.length - 1] !== tv) tcVals.push(tv);
+			}
 			menu.appendChild(sliderRow('trail length', tcL.min, tcL.max, tcL.step, gear.trailCap, function (v) {
 				app.setTrailCap(gear, v); edit(gear, 'trail');
-			}));
+			}, tcVals));
 			menu.appendChild(el('div', 'help',
 				'how many points of the trail stay on screen (animate mode). whole mode ' +
-				'draws the entire closed curve - its smoothness is the sidebar detail slider.'));
+				'draws the entire closed curve - its smoothness is the sidebar detail slider. ' +
+				'works best with auto-rotate camera enabled.'));
 		}
 
 		// 3D: quick camera row (reframing after editing a gear is common).

@@ -23,7 +23,7 @@
 		samplesPerTurn: { min: 20, max: 2000, step: 20, def: 200 },
 		// max MUST equal Gear.CAP (js/gear.js) - the ring buffer hard ceiling.
 		// floor is gear.js applyTrailCap's hard minimum; min is the slider's.
-		trailCap: { min: 500, max: 40000, step: 500, floor: 100 }
+		trailCap: { min: 100, max: 40000, step: 10, floor: 10 }
 	};
 
 	// round + clamp a user/loaded value for a bounded field.

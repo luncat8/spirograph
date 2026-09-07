@@ -60,7 +60,7 @@ glass shader: analytical layered glass works different when circles are off - pr
 	  with all tilt speeds 0 the figure is exactly the flat 2D curve
 	  standing upright
 	zero dependencies, WebGL2, runs from file://
-
+	presets: save to js, load default.js at startup, fill dropdown preset list (above save load buttons), presets_combine.py search all presets in CWD and add them to default.js, then rename added to *.delete-me. 
 
 ### run
 
