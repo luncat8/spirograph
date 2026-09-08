@@ -307,8 +307,8 @@
 			var b = buttonRow(label, function () { app.setDim(d); });
 			dimBtns[d] = b; dimWrap.appendChild(b);
 		}
-		dimBtn('2D', '2d');
-		dimBtn('3D', '3d');
+		dimBtn('□ 2D', '2d');
+		dimBtn('🧊 3D', '3d');
 		panel.appendChild(dimWrap);
 
 		panel.appendChild(sliderRow('anim speed', 0, 30, 0.01, app.globalSpeed, function (v) {
@@ -350,8 +350,8 @@
 			var b = buttonRow(label, function () { app.setMode(m); });
 			modeBtns[m] = b; modeWrap.appendChild(b);
 		}
-		modeBtn('Animate', 'animate');
-		modeBtn('Whole', 'whole');
+		modeBtn('⚛ Animate', 'animate');
+		modeBtn('⚛ Whole', 'whole');
 		panel.appendChild(modeWrap);
 
 		// color animation mode is GLOBAL (applies to every pencil). auto-switches
@@ -363,8 +363,8 @@
 			var b = buttonRow(label, function () { app.setColorMode(m); });
 			colorModeBtns[m] = b; cmWrap.appendChild(b);
 		}
-		colorModeBtn('cycles', 'cycles');
-		colorModeBtn('frequency', 'frequency');
+		colorModeBtn('✏️ cycles', 'cycles');
+		colorModeBtn('✏️ frequency', 'frequency');
 		panel.appendChild(cmWrap);
 
 		// whole-mode box: live period readout (with bake progress) + the

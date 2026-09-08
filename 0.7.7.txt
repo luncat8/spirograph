@@ -1,0 +1,28 @@
+1
+currently checkboxes are after label. looks not good. make them before label in same line. for whole project - sidebar and context menu
+
+
+2
+port simple backgrounds
+
+black
+checker land
+rainbow
+color box
+
+from https://github.com/luncat8/glass-spheres-shader.git
+
+
+3
+after 'glow points' add checkbox for on/off render of 3d axis
+
+
+4
+load default and presets from folder save/ 
+
+
+5
+'circles' color hue animation: 
+	off
+	distance gear from parent gear center
+	current gear speed related to parent gear center (change distance per dt)
