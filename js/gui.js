@@ -36,6 +36,10 @@
 	var levelsHost = null;
 	var levelRows = [];
 	var resetLevelsBtn = null;
+	// gear-tree host + its rows ({gear, node, info, chip1, chip2} per gear).
+	// rebuilt with the level sliders, highlighted by the open menu.
+	var treeHost = null;
+	var treeRows = [];
 
 	function el(tag, cls, txt) {
 		var e = document.createElement(tag);
@@ -276,37 +280,55 @@
 		buildPanel();
 	}
 
+	// one titled, striped box - the unit both the panel and the gear menu are
+	// built from (index.html .group: a title band over zebra rows), so related
+	// controls read as a small table instead of one long form.
+	function group(title, host) {
+		var box = el('div', 'group');
+		if (title) box.appendChild(el('div', 'gh', title));
+		host.appendChild(box);
+		return box;
+	}
+
 	function buildPanel() {
 		panel.innerHTML = '';
 		checkboxRefs = {};
 		sliderRefs = {};
 		colorRefs = {};
 
+		// playback: transport + the one global speed knob.
+		var gPlay = group('playback', panel);
 		var btns = el('div', 'btns');
 		pauseBtn = buttonRow(app.paused ? 'play (space)' : 'pause (space)', function () { app.togglePause(); });
 		btns.appendChild(pauseBtn);
 		btns.appendChild(buttonRow('clear (c)', function () { app.clearTraces(); }));
 		btns.appendChild(buttonRow('reset (x)', function () { app.resetScene(); }));
-		panel.appendChild(btns);
+		gPlay.appendChild(btns);
+		gPlay.appendChild(sliderRow('anim speed', 0, 30, 0.01, app.globalSpeed, function (v) {
+			app.globalSpeed = v;
+			app.markDirty();
+		}, null, 'globalSpeed'));
 
-
-		var sval = el('div', 'sub', 'scene');
-		panel.appendChild(sval);
+		// scene: presets, save/load, autosave status.
+		var gScene = group('scene', panel);
 		// preset dropdown (default.js's PRESETS) above the save/load buttons.
 		// the host is permanent so the row can be rebuilt in place when a
 		// combined default.js is opened and its preset list adopted.
 		presetHost = el('div', 'levels');
-		panel.appendChild(presetHost);
+		gScene.appendChild(presetHost);
 		rebuildPresetRow();
 		var sbtns = el('div', 'btns');
 		sbtns.appendChild(buttonRow('copy (s)', function () { app.copyScene(); }));
 		sbtns.appendChild(buttonRow('save (d)', function () { app.downloadScene(); }));
 		sbtns.appendChild(buttonRow('open (o)', function () { app.loadFile(); }));
 		sbtns.appendChild(buttonRow('paste (p)', function () { app.loadClipboard(); }));
-		panel.appendChild(sbtns);
+		gScene.appendChild(sbtns);
+		autosaveLabel = el('div', 'auto', 'autosave: on');
+		gScene.appendChild(autosaveLabel);
 
-		// dimension switch: 2D / 3D (g key). the 3D section below is shown only
-		// in 3D mode (setDim toggles it).
+		// dimension switch: 2D / 3D (g key). the camera rows below it belong
+		// to the same group and are shown only in 3D (setDim toggles dim3Box).
+		var gDim = group('dimension', panel);
 		var dimWrap = el('div', 'btns');
 		function dimBtn(label, d) {
 			var b = buttonRow(label, function () { app.setDim(d); });
@@ -314,18 +336,12 @@
 		}
 		dimBtn('□ 2D', '2d');
 		dimBtn('🧊 3D', '3d');
-		panel.appendChild(dimWrap);
-
-		panel.appendChild(sliderRow('anim speed', 0, 30, 0.01, app.globalSpeed, function (v) {
-			app.globalSpeed = v;
-			app.markDirty();
-		}, null, 'globalSpeed'));
+		gDim.appendChild(dimWrap);
 
 		// 3D section: camera controls. the second rotation axis is PER GEAR -
 		// each gear has its own tilt speed (speed2) in its edit menu; there is
 		// no global spin. 0 on every gear reproduces the flat 2D figure.
 		dim3Box = el('div');
-		dim3Box.appendChild(el('div', 'sub', '3D'));
 		dim3Box.appendChild(el('div', 'help',
 			'Each gear spins about two axes: the in-plane speed plus a tilt speed ' +
 			'(set it in a gear menu). drag an empty area to orbit the selected gear; ' +
@@ -347,9 +363,10 @@
 		cbtns.appendChild(buttonRow('fit view (f)', function () { app.fitView(); }));
 		cbtns.appendChild(buttonRow('reset camera', function () { app.resetCamera(); }));
 		dim3Box.appendChild(cbtns);
-		panel.appendChild(dim3Box);
+		gDim.appendChild(dim3Box);
 
-		// trace mode: animate / whole (exclusive switch)
+		// curve: trace mode + the global pencil color mode + the whole-mode bake.
+		var gCurve = group('curve', panel);
 		var modeWrap = el('div', 'btns');
 		function modeBtn(label, m) {
 			var b = buttonRow(label, function () { app.setMode(m); });
@@ -357,12 +374,12 @@
 		}
 		modeBtn('⚛ Animate', 'animate');
 		modeBtn('⚛ Whole', 'whole');
-		panel.appendChild(modeWrap);
+		gCurve.appendChild(modeWrap);
 
 		// color animation mode is GLOBAL (applies to every pencil). auto-switches
 		// with the trace mode (frequency in animate, cycles in whole) but the
 		// user can override at any time.
-		panel.appendChild(el('div', 'sub', 'color mode'));
+		gCurve.appendChild(el('div', 'sub', 'color mode'));
 		var cmWrap = el('div', 'btns');
 		function colorModeBtn(label, m) {
 			var b = buttonRow(label, function () { app.setColorMode(m); });
@@ -370,7 +387,7 @@
 		}
 		colorModeBtn('✏️ cycles', 'cycles');
 		colorModeBtn('✏️ frequency', 'frequency');
-		panel.appendChild(cmWrap);
+		gCurve.appendChild(cmWrap);
 
 		// whole-mode box: live period readout (with bake progress) + the
 		// closure-search ceiling. shown only in whole mode.
@@ -397,36 +414,41 @@
 		wholeBox.appendChild(el('div', 'help',
 			'points per turn of the baked curve - this is the smoothness knob ' +
 			'(period x detail points, capped at ' + Settings.LIMITS.trailCap.max + ' per pencil).'));
-		panel.appendChild(wholeBox);
+		gCurve.appendChild(wholeBox);
 
-		panel.appendChild(checkboxRow('bake full figure (overlay)', app.overlay.on, function (v) {
-			app.setOverlay(v);
-		}, 'overlay'));
-
-		// view toggles (independent checkboxes, combinable)
-		panel.appendChild(checkboxRow('circles', app.showCircles, function (v) { app.setShowCircles(v); }, 'showCircles'));
-		panel.appendChild(selectRow('circles hue', Settings.CIRCLE_HUE_IDS, function (id) {
+		// view: what is drawn over / around the trace. all independent
+		// toggles, combinable.
+		var gView = group('view', panel);
+		gView.appendChild(checkboxRow('circles', app.showCircles, function (v) { app.setShowCircles(v); }, 'showCircles'));
+		gView.appendChild(selectRow('circles hue', Settings.CIRCLE_HUE_IDS, function (id) {
 			return Settings.CIRCLE_HUES[id].label;
 		}, app.circleHue, function (v) { app.setCircleHue(v); }, 'circleHue'));
-		panel.appendChild(el('div', 'help',
-			'animates the colour of the circle outlines by the gear\'s distance ' +
-			'from its parent\'s centre, or by how fast that distance changes ' +
-			'(both move only when a gear has a 3D tilt speed).'));
-		panel.appendChild(checkboxRow('dial', app.showDial, function (v) { app.setShowDial(v); }, 'showDial'));
-		panel.appendChild(checkboxRow('draw trail', app.drawTrails, function (v) { app.setDrawTrails(v); }, 'drawTrails'));
-		panel.appendChild(checkboxRow('points', app.showPoints, function (v) { app.setShowPoints(v); }, 'showPoints'));
-		panel.appendChild(checkboxRow('glow points', app.glowPoints, function (v) { app.setGlow(v); }, 'glowPoints'));
-		panel.appendChild(checkboxRow('3D axis', app.showAxis, function (v) { app.setShowAxis(v); }, 'showAxis'));
-		panel.appendChild(el('div', 'help',
+		gView.appendChild(selectRow('hue anchor', Settings.CIRCLE_HUE_TARGET_IDS, function (id) {
+			return Settings.CIRCLE_HUE_TARGETS[id].label;
+		}, app.circleHueTarget, function (v) { app.setCircleHueTarget(v); }, 'circleHueTarget'));
+		gView.appendChild(el('div', 'help',
+			'rides the colour of the circle outlines on how far a gear centre is from ' +
+			'the anchor centre (distance), or on how fast that distance changes (speed). ' +
+			'a gear is mounted rigidly on its parent, so the PARENT anchor is a constant ' +
+			'tint per gear - pick the parent\'s parent or the root centre to watch it move.'));
+		gView.appendChild(checkboxRow('dial', app.showDial, function (v) { app.setShowDial(v); }, 'showDial'));
+		gView.appendChild(checkboxRow('draw trail', app.drawTrails, function (v) { app.setDrawTrails(v); }, 'drawTrails'));
+		gView.appendChild(checkboxRow('bake full figure (overlay)', app.overlay.on, function (v) {
+			app.setOverlay(v);
+		}, 'overlay'));
+		gView.appendChild(checkboxRow('points', app.showPoints, function (v) { app.setShowPoints(v); }, 'showPoints'));
+		gView.appendChild(checkboxRow('glow points', app.glowPoints, function (v) { app.setGlow(v); }, 'glowPoints'));
+		gView.appendChild(checkboxRow('3D axis', app.showAxis, function (v) { app.setShowAxis(v); }, 'showAxis'));
+		gView.appendChild(el('div', 'help',
 			'Uncheck "draw trail" to hide the traced curve (points-only view). ' +
 			'"3D axis" draws the world axes (X red, Y green, Z blue) in 3D only.'));
 
 		// full-screen background (ports of the glass-spheres-shader interiors).
-		panel.appendChild(el('div', 'sub', 'background'));
-		panel.appendChild(selectRow('background', Settings.BACKGROUND_IDS, function (id) {
+		var gBg = group('background', panel);
+		gBg.appendChild(selectRow('background', Settings.BACKGROUND_IDS, function (id) {
 			return Settings.BACKGROUNDS[id].label;
 		}, app.background, function (v) { app.setBackground(v); }, 'background'));
-		panel.appendChild(el('div', 'help',
+		gBg.appendChild(el('div', 'help',
 			'analytic environments behind the figure: checker land, rainbow and ' +
 			'color box turn with the camera in 3D (ports of ' +
 			'luncat8/glass-spheres-shader); black is the plain canvas colour.'));
@@ -434,30 +456,30 @@
 		// glass sphere shells over the gear discs: a selector picks the ray
 		// tracer (render.js), the slider rows below it are rebuilt per shader
 		// from Settings.SPHERE_SHADERS (each shader keeps its own bag).
-		panel.appendChild(el('div', 'sub', 'spheres'));
-		panel.appendChild(selectRow('glass shader', Settings.SPHERE_SHADER_IDS, function (id) {
+		var gSphere = group('spheres', panel);
+		gSphere.appendChild(selectRow('glass shader', Settings.SPHERE_SHADER_IDS, function (id) {
 			return Settings.SPHERE_SHADERS[id].label;
 		}, app.sphereShader, function (v) { app.setSphereShader(v); rebuildSphereRows(); }, 'sphereShader'));
-		panel.appendChild(colorRow('sphere tint', app.sphereColor, function (v) { app.setSphereColor(v); }, 'sphereColor'));
+		gSphere.appendChild(colorRow('sphere tint', app.sphereColor, function (v) { app.setSphereColor(v); }, 'sphereColor'));
 		sphereHost = el('div', 'levels');
-		panel.appendChild(sphereHost);
+		gSphere.appendChild(sphereHost);
 		rebuildSphereRows();
-		panel.appendChild(el('div', 'help',
+		gSphere.appendChild(el('div', 'help',
 			'Ray-traced glass shells on every gear. hollow bubbles: membrane wall, ' +
 			'iridescence, dispersion, see-through depth (layers). layered glass: ' +
 			'nearest three shells composited.'));
 
 		// gear tree: level sliders grow every parent at a depth by the same
 		// child count, radially spaced; symmetry mirrors menu edits per level.
-		panel.appendChild(el('div', 'sub', 'tree'));
-		panel.appendChild(checkboxRow('symmetry mode', app.symmetry, function (v) {
+		var gTree = group('tree', panel);
+		gTree.appendChild(checkboxRow('symmetry mode', app.symmetry, function (v) {
 			app.setSymmetry(v);
 		}, 'symmetry'));
-		panel.appendChild(el('div', 'help',
+		gTree.appendChild(el('div', 'help',
 			'When ON, menu edits apply to every sibling at the same level. Add-sub-gear grows the whole level.'));
 		levelsHost = el('div', 'levels');
 		levelRows.length = 0;
-		panel.appendChild(levelsHost);
+		gTree.appendChild(levelsHost);
 		var treeBtns = el('div', 'btns');
 		resetLevelsBtn = buttonRow('reset levels', function () {
 			var maxD = app.maxDepth();
@@ -465,12 +487,14 @@
 		});
 		resetLevelsBtn.style.display = 'none';
 		treeBtns.appendChild(resetLevelsBtn);
-		panel.appendChild(treeBtns);
-		panel.appendChild(el('div', 'help',
-			'lvl N = children per parent at that level, placed at i * 360/N. 0 removes the level.'));
-
-		autosaveLabel = el('div', 'auto', 'autosave: on');
-		panel.appendChild(autosaveLabel);
+		gTree.appendChild(treeBtns);
+		// the tree itself, right under the level sliders.
+		treeHost = el('div', 'tree');
+		gTree.appendChild(treeHost);
+		gTree.appendChild(el('div', 'help',
+			'lvl N = children per parent at that level, placed at i * 360/N. 0 removes the level. ' +
+			'The list is the whole tree: click a row to open that gear\'s menu, and a gear ' +
+			'picked on the canvas lights its row up.'));
 
 		helpLine = el('div', 'help',
 			'space pause - wheel zoom - drag pan - click gear to edit - rmb browser menu - Esc close');
@@ -480,6 +504,108 @@
 		GUI.setColorMode(app.colorMode || 'frequency');
 		GUI.setDim(app.dim || '2d');
 		rebuildLevels();
+	}
+
+	// ---- gear tree: one row per gear, grouped by level ---------------------
+	// the level sliders set the SHAPE of a level; the tree names the gears in
+	// it, so a dot deep in a rosette is opened from the list instead of hunted
+	// on the canvas. rebuildLevels() owns the refresh (every structural change
+	// runs through it) and openMenu/closeMenu own the highlight - which is also
+	// how a canvas pick reaches the tree.
+	var SCROLL_NEAR = { block: 'nearest' };    // shared: never allocate per call
+
+	function idxInTree(g) {
+		return g.parent ? g.parent.children.indexOf(g) : app.roots.indexOf(g);
+	}
+
+	// '#1.0.2' = the root index, then the child index down to this gear. Read
+	// off the live parent links, so the label survives every rebuild unchanged.
+	function gearPath(g) {
+		var s = '' + idxInTree(g);
+		while (g.parent) { g = g.parent; s = idxInTree(g) + '.' + s; }
+		return s;
+	}
+
+	// the two numbers a gear is actually recognised by (tilt shows up only
+	// when a 3D scene really has one).
+	function gearInfo(g) {
+		var s = 'd ' + fmt(g.r * 2) + '  v ' + fmt(g.speed);
+		if (g.speed2) s += '  t ' + fmt(g.speed2);
+		return s;
+	}
+
+	// the pencil colors of the gear, as dots: the fastest way to match a row
+	// with the curve it draws. an off slot is hidden, not greyed - a gear with
+	// no pencil at all then reads as a bare row, which is what it is.
+	function setChips(r, g) {
+		var p = g.pencil;
+		r.chip1.style.visibility = p.c1.on ? '' : 'hidden';
+		r.chip1.style.background = p.c1.color;
+		r.chip2.style.visibility = p.c2.on ? '' : 'hidden';
+		r.chip2.style.background = p.c2.color;
+	}
+
+	function makeTreeNode(g, depth) {
+		var node = el('div', 'tnode');
+		node.style.paddingLeft = (6 + depth * 12) + 'px';
+		var chip1 = el('span', 'chip'), chip2 = el('span', 'chip');
+		node.appendChild(chip1);
+		node.appendChild(chip2);
+		node.appendChild(el('span', 'tp', '#' + gearPath(g)));
+		var info = el('span', 'tg', gearInfo(g));
+		node.appendChild(info);
+		node.addEventListener('click', function () {
+			var b = node.getBoundingClientRect();
+			openMenu(g, b.left + b.width + 10, b.top);
+		});
+		var r = { gear: g, node: node, info: info, chip1: chip1, chip2: chip2 };
+		setChips(r, g);
+		treeRows.push(r);
+		return node;
+	}
+
+	function buildGearTree() {
+		if (!treeHost) return;
+		treeHost.innerHTML = '';
+		treeRows.length = 0;
+		var level = app.roots, depth = 0;
+		while (level.length) {
+			treeHost.appendChild(el('div', 'tlev',
+				(depth ? 'lvl ' + depth : 'main gears') + ' - ' + level.length));
+			var next = [];
+			for (var i = 0; i < level.length; i++) {
+				treeHost.appendChild(makeTreeNode(level[i], depth));
+				for (var c = 0; c < level[i].children.length; c++) next.push(level[i].children[c]);
+			}
+			level = next;
+			depth++;
+		}
+		highlightTree();
+	}
+
+	// the row of the gear whose menu is open is the selected one.
+	function highlightTree() {
+		for (var i = 0; i < treeRows.length; i++) {
+			var r = treeRows[i], on = r.gear === currentGear;
+			r.node.classList.toggle('sel', on);
+			if (on && r.node.scrollIntoView) r.node.scrollIntoView(SCROLL_NEAR);
+		}
+	}
+
+	// a menu edit changed this gear's numbers - and a diameter scales the
+	// whole sub-tree mounted on it, so those rows follow too.
+	function isEditedOrBelow(g, edited) {
+		for (var p = g; p; p = p.parent) if (p === edited) return true;
+		return false;
+	}
+
+	function refreshTreeRow(g) {
+		for (var i = 0; i < treeRows.length; i++) {
+			var r = treeRows[i];
+			if (!isEditedOrBelow(r.gear, g)) continue;
+			r.info.textContent = gearInfo(r.gear);
+			setChips(r, r.gear);
+		}
 	}
 
 	// lvl sliders run 0..maxLevelN: 0 empties the level (and everything below
@@ -509,6 +635,9 @@
 			levelRows[i].val.textContent = n;
 		}
 		resetLevelsBtn.style.display = need > 1 ? '' : 'none';
+		// the gear list mirrors the tree, so it rides the same refresh: every
+		// structural change in main.js ends in rebuildLevels().
+		buildGearTree();
 	}
 
 	function setPaused(p) {
@@ -563,18 +692,20 @@
 		attachDragHandle(title, menu);
 		menu.appendChild(title);
 
-		menu.appendChild(checkboxRow('internal (roll inside parent)', gear.internal, function (v) {
+		// same striped groups as the panel: geometry / pen / trail / view / tree.
+		var gGeom = group('geometry', menu);
+		gGeom.appendChild(checkboxRow('internal (roll inside parent)', gear.internal, function (v) {
 			gear.internal = v; edit(gear, 'geom');
 		}));
 
 		// diameter scales the sub-tree mounted on this gear, so gear ratios (and
 		// with them the period) survive the edit. in whole mode the reachable
 		// diameters are the rational multiples of the parent's.
-		menu.appendChild(sliderRow('diameter', 0.04, 2.0, 0.01, gear.r * 2, function (v) {
+		gGeom.appendChild(sliderRow('diameter', 0.04, 2.0, 0.01, gear.r * 2, function (v) {
 			app.setGearRadius(gear, v / 2); edit(gear, 'geom');
 		}, whole ? app.diameterChoices(gear) : null));
 
-		menu.appendChild(sliderRow('speed', -1, 1, 0.01, gear.speed, function (v) {
+		gGeom.appendChild(sliderRow('speed', -1, 1, 0.01, gear.speed, function (v) {
 			gear.speed = v; edit(gear, 'geom');
 		}, whole ? app.speedChoices() : null));
 
@@ -582,24 +713,25 @@
 		// whole mode snaps like speed so the two-axis bake closes. editing it is
 		// a geometry change (App.setGearSpeed2 clears the subtree / re-bakes).
 		if (app.dim === '3d') {
-			menu.appendChild(sliderRow('tilt speed', -1, 1, 0.01, gear.speed2 || 0, function (v) {
+			gGeom.appendChild(sliderRow('tilt speed', -1, 1, 0.01, gear.speed2 || 0, function (v) {
 				app.setGearSpeed2(gear, v);
 			}, whole ? app.speedChoices() : null));
 		}
 
-		menu.appendChild(sliderRow('pencil d', 0, 1, 0.01, gear.pencil.d, function (v) {
+		var gPen = group('pen', menu);
+		gPen.appendChild(sliderRow('pencil d', 0, 1, 0.01, gear.pencil.d, function (v) {
 			gear.pencil.d = v; edit(gear, 'geom');
 		}));
 
-		menu.appendChild(sliderRow('pencil width', 0.5, 12, 0.5, gear.pencil.width, function (v) {
+		gPen.appendChild(sliderRow('pencil width', 0.5, 12, 0.5, gear.pencil.width, function (v) {
 			gear.pencil.width = v; edit(gear, 'width');
 		}));
 
-		menu.appendChild(colorCheckRow('color 1', gear.pencil.c1.on, gear.pencil.c1.color,
+		gPen.appendChild(colorCheckRow('color 1', gear.pencil.c1.on, gear.pencil.c1.color,
 			function (v) { gear.pencil.c1.on = v; edit(gear, 'color'); },
 			function (v) { gear.pencil.c1.color = v; edit(gear, 'color'); }));
 
-		menu.appendChild(colorCheckRow('color 2', gear.pencil.c2.on, gear.pencil.c2.color,
+		gPen.appendChild(colorCheckRow('color 2', gear.pencil.c2.on, gear.pencil.c2.color,
 			function (v) { gear.pencil.c2.on = v; edit(gear, 'color'); },
 			function (v) { gear.pencil.c2.color = v; edit(gear, 'color'); }));
 
@@ -615,14 +747,15 @@
 			speedLab.firstChild.nodeValue = app.mode === 'whole' ? 'hue cycles ' : (cm === 'frequency' ? 'hue/sec ' : 'cycles ');
 		};
 		speedLabRefresh();
-		menu.appendChild(speedRow);
+		gPen.appendChild(speedRow);
 
 		if (!whole) {
+			var gTrail = group('trail', menu);
 			var tcL = Settings.LIMITS.trailCap;
-			menu.appendChild(sliderRow('trail length', tcL.min, tcL.max, tcL.step, gear.trailCap, function (v) {
+			gTrail.appendChild(sliderRow('trail length', tcL.min, tcL.max, tcL.step, gear.trailCap, function (v) {
 				app.setTrailCap(gear, v); edit(gear, 'trail');
 			}, logLadder(tcL.min, tcL.max, 100, Math.round)));
-			menu.appendChild(el('div', 'help',
+			gTrail.appendChild(el('div', 'help',
 				'how many points of the trail stay on screen (animate mode). whole mode ' +
 				'draws the entire closed curve - its smoothness is the sidebar detail slider. ' +
 				'works best with "auto-rotate camera" enabled. or "bake full figure" disabled'));
@@ -630,13 +763,14 @@
 
 		// 3D: quick camera row (reframing after editing a gear is common).
 		if (app.dim === '3d') {
+			var gCam = group('view', menu);
 			var vb = el('div', 'btns');
 			vb.appendChild(buttonRow('fit view (f)', function () { app.fitView(); }));
 			vb.appendChild(buttonRow('reset camera', function () { app.resetCamera(); }));
-			menu.appendChild(el('div', 'sub', 'view'));
-			menu.appendChild(vb);
+			gCam.appendChild(vb);
 		}
 
+		var gGear = group('gears', menu);
 		var gb = el('div', 'btns');
 		// symmetry ON: add-sub-gear grows the whole level (App.addSubGear routes it).
 		gb.appendChild(buttonRow('add sub-gear', function () { app.addSubGear(gear); }));
@@ -644,24 +778,30 @@
 		if (!gear.parent) rm.disabled = true;
 		gb.appendChild(rm);
 		gb.appendChild(buttonRow('close', function () { closeMenu(); }));
-		menu.appendChild(gb);
+		gGear.appendChild(gb);
 
 		menu.classList.remove('hidden');
 		// position, clamped to viewport
-		var mw = menu.offsetWidth || 240;
+		var mw = menu.offsetWidth || 264;
 		var mh = menu.offsetHeight || 320;
 		var x = Math.min(clientX, window.innerWidth - mw - 8);
 		var y = Math.min(clientY, window.innerHeight - mh - 8);
 		menuX = Math.max(8, x); menuY = Math.max(8, y);
 		menu.style.left = menuX + 'px';
 		menu.style.top = menuY + 'px';
+		highlightTree();
 	}
 
 	// one edit path: mirror to the level first (no-op when symmetry is off),
-	// then run the normal per-gear update.
+	// then run the normal per-gear update, then follow the gear-tree rows -
+	// they show exactly the numbers this menu edits. a single gear rewrites
+	// its own rows in place (a diameter rescales the sub-tree under it); a
+	// mirrored symmetry edit touched the whole level, so the list is rebuilt.
 	function edit(gear, kind) {
 		app.applySymmetry(gear, kind);
 		app.onGearParam(gear, kind);
+		if (app.symmetry) buildGearTree();
+		else refreshTreeRow(gear);
 	}
 
 	function closeMenu() {
@@ -670,6 +810,7 @@
 		speedLabRefresh = null;
 		// camera falls back to orbiting the root once the menu closes.
 		if (app.dim === '3d' && app.setOrbitGear) app.setOrbitGear(null);
+		highlightTree();
 	}
 
 	function isMenuOpen() { return currentGear != null; }
@@ -680,6 +821,9 @@
 		closeMenu: closeMenu,
 		isMenuOpen: isMenuOpen,
 		menuGear: function () { return currentGear; },
+		// the gear-tree rows ({gear, node, info, chip1, chip2}) - live DOM refs,
+		// used by the headless checks and by nothing in the app itself.
+		gearTree: function () { return treeRows; },
 		rebuildLevels: rebuildLevels,
 		setAutosave: setAutosave,
 		setPaused: setPaused,
@@ -722,6 +866,7 @@
 		setGlow: function (v) { if (checkboxRefs.glowPoints) checkboxRefs.glowPoints.checked = v; },
 		setShowAxis: function (v) { if (checkboxRefs.showAxis) checkboxRefs.showAxis.checked = v; },
 		setCircleHue: function (v) { if (selectRefs.circleHue) selectRefs.circleHue.value = v; },
+		setCircleHueTarget: function (v) { if (selectRefs.circleHueTarget) selectRefs.circleHueTarget.value = v; },
 		setBackground: function (v) { if (selectRefs.background) selectRefs.background.value = v; },
 		setDrawTrails: function (v) { if (checkboxRefs.drawTrails) checkboxRefs.drawTrails.checked = v; },
 		setSphereShader: function (v) {

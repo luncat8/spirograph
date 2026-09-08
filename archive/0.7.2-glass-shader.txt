@@ -1,0 +1,45 @@
+
+
+task 1
+replace glass spheres shader (that is toggle by checkbox) with selector
+
+(note we need only spheres, do not implement cubes or other not related stuff)
+
+
+Reference shader file: https://github.com/luncat8/glass-spheres-shader/blob/main/shaders/hollow_bubbles.js
+
+Selected shader: hollow glass bubbles - membrane wall, 32 objects, sliders  [id: hollow_bubbles]
+Tech summary: Analytic membrane tracing: each ray crosses thin glass shells (outer + inner surface per object — sphere, spun cube or tetra — up to 10 layers), refracting through the wall with Fresnel, Beer-Lambert tint and thin-film iridescence; JS feeds uBubbles / uSpin vec4[32] array uniforms; scene-aware (cage, glass-land heightfield).
+
+selected settings:
+
+wall 0.115
+ior 1.45
+tint 0.70
+iris 0.55
+disp 0.35
+layers 6
+
+
+
+Reference shader file: https://github.com/luncat8/glass-spheres-shader/blob/main/shaders/analytic_layers.js
+
+Selected shader: analytic layered glass - nearest 3 layers, up to 61 objects  [id: analytic_layers]
+Tech summary: Analytic layered glass: one bounded ray/shape pass (sphere, spun cube or tetra, exact enter/exit with normals) over up to 61 objects keeps the nearest three layers and composites them back to front. Scene-aware — in the cage scene it also draws depth-correct ray/segment wireframe edges, three gravity-driven vertical bounces on the top face and a procedural pastel-cloud sky; in the glass-land scene a simplex heightfield block with a lake is composed at its depth.
+
+selected settings:
+
+wall 0.045
+ior 1.42
+tint 0.55
+iris 0.55
+
+
+
+task 2
+fix old bug - 1st gear in most cases is not visible in shader render. i hope this bug gone with new shader but may be it is not related.
+
+
+
+
+

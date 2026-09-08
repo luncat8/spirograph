@@ -58,6 +58,17 @@
 - never rebuild the slider row the pointer is currently dragging (detaching an
   active range input releases pointer capture); skip rows where
   document.activeElement === row.input when syncing values.
+- group layout is cheap IF rows are found by label text: one `group(title,
+  host)` box per section, a `.gh` band and CSS zebra rows
+  (`.group > :not(.gh):nth-child(even)`), zero per-group JS. the zeroing of the
+  rows' own margins inside a group is what makes the bands contiguous, and any
+  test that reaches for `panel.children[i]` breaks the moment the layout nests
+  a row - walk for the row whose `labelEl` starts with the label instead
+  (`sliderRows` / `rowByLabel` in test/run.js).
+- selection state should be DERIVED, not duplicated: the gear list highlights
+  "the row of the gear whose menu is open", so a canvas pick lights the list
+  up for free and closing the menu clears it - a second "selected gear" field
+  would need syncing with the camera retarget, the menu and the tree.
 
 ## gear sizing
 - never use an ABSOLUTE floor for a generated child radius
@@ -365,3 +376,47 @@
   renames files to *.delete-me, which would orphan a linked file's index.html
   tag. it now skips any file whose first line is the `// preset:` marker
   (the link workflow owns it). each script recognizes the other's output.
+
+## a distance that cannot change (0.7.8)
+- a gear is mounted RIGIDLY on its parent, so the distance between the two
+  centres is orbitR = |parent.r -/+ gear.r| forever. that is true in flat 2D
+  AND in the nested 3D frames (gear.js 280 vs 355 write the same expression):
+  a tilt swings the direction of the mount, never its length. any "colour /
+  width / opacity rides the distance to the parent" feature is therefore a
+  CONSTANT, and the derived rate is identically 0 - not a bug in the
+  measurement, a property of the mechanism. measure to a farther anchor (the
+  parent's parent, the root) or to a pen point, and say so in the UI text: the
+  0.7.7 version documented "moves when a gear has a 3D tilt speed", which is
+  simply false, and the user reported it as "the colours are not updated".
+- a per-frame DIFFERENCE of a quantity that the user can redefine (which
+  anchor, which dimension, 2D <-> 3D) must be re-PRIMED on the switch: reset
+  the previous sample to the new value AND skip one frame of the derivative
+  (main.js primeGuideHue + hueRateCold). otherwise the switch itself is read
+  as an enormous rate, exactly the artifact the smoothing exists to remove.
+## derived lists: rebuild on the structural event, refresh on the edit
+- a UI list that mirrors the scene (the gear tree) needs two cheap rules, not
+  a diff. (1) rebuild it in the ONE function every structural change already
+  calls (gui.js rebuildLevels - addSubGear / applyLevel / removeGear / the
+  symmetry commit / loadObject / resetScene all end there), so it can never be
+  a stale copy. (2) values that change without a structural change (a
+  diameter, a color) go through the menu's single edit() path, which rewrites
+  the affected rows IN PLACE - a rebuild per input event would fight the drag
+  the same way a rebuilt slider row does. remember a diameter rescales its
+  whole sub-tree (App.setGearRadius -> scaleSubtree), so refresh the gear AND
+  everything below it, not just its own row.
+- identity labels beat indices: '#0.1.2' rebuilt from the live parent links
+  (index in parent, walked up to the root index) is stable across rebuilds and
+  needs no bookkeeping in the gear model - no `id` field to keep unique.
+## headless tests of measured behaviour
+- anything that adapts to a measured frame time must have its clock pinned in
+  the test, or the machine under load flips the assertion: main.js takes
+  max(CPU ms, rAF interval), so `w.performance.now = function () { return 0; }`
+  leaves the rAF interval - the value the test feeds through tick(n, dtMs) - as
+  the only cost.
+  without that, "a large ring at 60 fps is drawn in full" failed at random.
+- drive interaction through the REAL entry point when the feature is about
+  selection: dispatch('pointerdown') on the canvas stub at the projected
+  centre of a gear (cx0 + (wx + panX) * S) goes through hitGear, so the test
+  proves the whole path. mind hitGear's rule (the SMALLEST effective circle
+  under the pointer wins), and use a one-gear scene when the pick must be
+  unambiguous.

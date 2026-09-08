@@ -20,10 +20,20 @@ glass shader: analytical layered glass works different when circles are off - pr
 ## features summary
 
 	interactive parent-child gear tree, add / remove sub-gears
+	panel and gear menu are organised in striped groups (playback, scene,
+	  dimension, curve, view, background, spheres, tree / geometry, pen,
+	  trail, view, gears): a title band over zebra rows, so a section is found
+	  by its shape and not by reading every label
 	gear tree level sliders (lvl 1..N, starting at 0): every parent at a depth
 	  gets N children placed at i*360/N degrees; 0 removes the level and
 	  everything below it; new siblings deep-clone the template sub-tree;
 	  `reset levels` collapses the tree to a single chain
+	gear list under the level sliders: one row per gear, grouped by level and
+	  labelled with its place in the tree (#root.child.child), its diameter,
+	  speed and pencil colors. clicking a row opens that gear's menu (and in
+	  3D puts the orbit camera on it); picking a gear on the canvas lights the
+	  same row up, and a menu edit rewrites the row (a diameter resizes the
+	  rows of the whole sub-tree mounted on it)
 	symmetry mode: context-menu edits mirror to every gear at the same level;
 	  add-sub-gear grows the whole level; a symmetric scene SAVES as one gear
 	  per level (that level's template) plus the per-level counts, so save
@@ -32,6 +42,12 @@ glass shader: analytical layered glass works different when circles are off - pr
 	  two color slots (each with its own enable checkbox) -> 0 colors = no pencil,
 	  1 color = static, 2 colors = animated blend between them
 	  global cycles/frequency color mode (auto per trace mode, user-overridable)
+	animated guide circles: the `circles` outlines can ride their colour on how
+	  far a gear centre is from an ANCHOR gear (`hue anchor`: its parent, the
+	  parent's parent, or the root) or on how fast that distance changes. the
+	  parent anchor is constant by construction - the mount is rigid, so the
+	  centre distance is |R ± r| forever, in 2D and in tilted 3D alike - which
+	  tints the gears apart; a farther anchor is what makes the hue move
 	per-pencil trail length (how much of the animate trail stays on screen;
 	  rings grow lazily) + a separate whole-mode `detail` (points per turn)
 	glass spheres view option: a `glass shader` selector dresses every gear
@@ -94,7 +110,11 @@ for node debugging, guard module.exports so the same files run in both.
 
 square canvas, size = short side of window (snapped to mod 64px texture)
 
-GUI sits left for wide windows, top for tall windows
+GUI sits left for wide windows, top for tall windows. its controls are split
+into titled groups with striped rows (playback, scene, dimension, curve, view,
+background, spheres, tree) and the gear context menu uses the same boxes
+(geometry, pen, trail, view, gears) - a group is one `gui.js` `group()` call,
+the stripes are pure CSS, so nothing about the controls themselves changes
 
 zoom / pan with pointer, touch and mouse wheel
 
@@ -162,6 +182,12 @@ the left panel has a `tree` section:
 	level below it), which is how a level is removed. lvl k+1 appears once
 	level k has sub-gears; a 400-gear guard blocks a runaway 12 x 12 x 12.
 	reset levels button - collapse every level to a single child
+	gear list under the sliders - one row per gear, grouped by level, each
+	row labelled `#root.child.child` with its diameter and speed and dotted
+	with its pencil colors. clicking a row opens that gear's context menu (in
+	3D the orbit camera moves to it, exactly as with a canvas pick), and a
+	gear picked on the canvas lights its row up - the list is the tree, not a
+	snapshot: it rebuilds with every structural change and follows menu edits
 
 and a `whole mode` section (visible in whole mode):
 

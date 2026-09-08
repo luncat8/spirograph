@@ -118,8 +118,9 @@
 		gear.pushed = 0;
 		gear.baked = 0;
 		gear.cx = 0; gear.cy = 0; gear.penx = 0; gear.peny = 0;
-		// guide-circle hue scratch (main.js): the distance from the parent's
-		// centre and its smoothed rate of change. runtime only, never saved.
+		// guide-circle hue scratch (main.js): the distance to the hue ANCHOR
+		// gear and that distance's smoothed rate of change. runtime only,
+		// never saved.
 		gear.distPrev = 0; gear.distRate = 0;
 		// 3D pose
 		gear.f3 = [1,0,0, 0,1,0, 0,0,1];

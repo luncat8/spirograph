@@ -1,5 +1,53 @@
 # CHANGELOG
 
+## 0.7.8 - striped menu groups, a gear tree, and a hue that finally moves
+- **the panel and the gear menu are split into groups.** playback (pause /
+  clear / reset / anim speed), scene (preset, copy / save / open / paste,
+  autosave), dimension (2D / 3D and the camera rows), curve (trace mode, color
+  mode, period + bake sliders), view (circles, dial, trail, points, glow, axes,
+  overlay), background, spheres, tree. every group is a box with a title band
+  over zebra-striped rows - the rhythm of a striped table, one table per
+  group - so a section is recognised by its shape instead of by reading every
+  label, and the gear menu is built the same way (geometry / pen / trail /
+  view / gears).
+- **new row under the level sliders: the gear list.** one row per gear,
+  grouped by level (`main gears - 1`, `lvl 1 - 3`, `lvl 2 - 6`), each labelled
+  with its place in the tree (`#0.1.2`), its diameter and speed, and dotted
+  with its pencil colors. clicking a row opens that gear's menu (and, in 3D,
+  puts the orbit camera on it); picking a gear on the canvas lights the same
+  row up, and a menu edit rewrites the row live - including the rows of the
+  sub-tree a diameter resizes. the list rebuilds with the tree, so it is never
+  a stale copy of the scene.
+- **fix: the `circles` hue animation was constant.** a gear is mounted
+  RIGIDLY on its parent, so the distance between the two centres is |R ± r|
+  forever - flat 2D and tilted 3D alike (the help text claimed a tilt made it
+  move; it does not) - and its rate is therefore 0. the hue now measures to a
+  chosen anchor (`hue anchor`): the parent centre (still there - a useful
+  static tint that tells the gears apart), the parent's parent, or the root
+  centre, and `distance` / `speed` (the smoothed d/dt of the same measurement)
+  both follow it. deeper gears really pulse now, both fields persist in the
+  scene / autosave, and switching either re-primes the distance scratch so a
+  mode change never reads back as one giant rate frame.
+
+## 0.7.7 - checkboxes up front, ported backgrounds, axis toggle, save/, circle hue
+- **checkbox rows now lead with the box**: `<label>[x] text</label>` on one
+  flex line, in the sidebar and in the gear menu alike (the box used to trail
+  the label and wrap under it).
+- **the four simple backgrounds of luncat8/glass-spheres-shader are ported**:
+  a full-screen `background` select with black / checker land / rainbow /
+  color box. they are direction-only environments (like a cubemap), so 3D
+  samples them through the orbit camera - they turn with the figure - and 2D
+  through a fixed window direction; `black` draws no pass at all (the plain
+  clear colour).
+- **`3D axis` checkbox** after `glow points`: the world axes at the root
+  (X red, Y green, Z blue), 3D only.
+- **the startup scene and the presets now live in `save/`**: `index.html`
+  loads `save/default.js` plus one `<script class="preset">` tag per file in
+  `save/` (managed by `save/link_presets_to_html.py`).
+- **`circles hue`**: what drives the colour of the guide circles - off, the
+  gear's distance to its parent's centre, or how fast that distance changes.
+  (the measured distance was the wrong one - fixed in 0.7.8.)
+
 ## 0.7.6 - small symmetry saves, persistent auto-rotate, multi-file presets
 - **symmetry mode now saves small.** a scene saved with symmetry on stores
   ONE gear per level (the level's template) plus a top-level `levels`

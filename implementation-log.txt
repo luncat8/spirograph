@@ -715,6 +715,129 @@ re-verification this round (no WebGL-path change).
 - stub-dom: FileReader stub (synchronous readAsText -> onload) + files:[]
   on every stub element so the open-file path is drivable headless.
 
+## done (0.7.7) - task 0.7.7.txt implemented (logged retroactively: that commit shipped no entry; item 5 had a bug, fixed in 0.7.8)
+
+1. checkbox rows lead with the box: checkLabel() builds
+   <label>[x] text</label> and index.html makes `.row label` a single flex
+   line, so sidebar + context menu agree (was: label, then a wrapped box).
+2. `background` select: black / checker land / rainbow / color box, ported
+   from luncat8/glass-spheres-shader into one full-screen GLSL pass in
+   render.js (BG_THEMES themes 0..2, direction-only like a cubemap: 3D rays
+   from the orbit camera, 2D a fixed window direction, uPersp switches).
+   'black' draws no pass - the clear colour IS the background.
+3. `3D axis` checkbox after `glow points` (App.showAxis, default ON since the
+   axes were always drawn): drawSkeleton3D paints X/Y/Z at the root.
+4. the startup scene + presets load from save/: index.html tags
+   save/default.js and one <script class="preset"> per save/*.js file.
+5. `circles hue`: App.circleHue off | distance | speed, gear.distPrev /
+   gear.distRate scratch refreshed in updateGuideHue() once per render and
+   read by circleColor() in both the 2D and the 3D guidework.
+
+## done (0.7.8) - task 0.7.8.txt implemented (striped groups, gear tree, hue anchor)
+
+### 1. logical groups with a striped background
+- gui.js gained ONE layout primitive, group(title, host): a `.group` box with
+  a `.gh` title band; buildPanel() and openMenu() now build every control into
+  one instead of appending loose rows to the panel. panel groups: playback
+  (pause/clear/reset + anim speed), scene (preset row, copy/save/open/paste,
+  autosave line), dimension (2D-3D buttons + dim3Box camera rows), curve
+  (trace mode, color mode, period readout + max period + detail), view
+  (circles + its two selects, dial, trail, overlay, points, glow, axes),
+  background, spheres, tree. menu groups: geometry / pen / trail / view (3D
+  only) / gears. nothing was added to the DOM per group beyond a class: the
+  stripes are pure CSS (`.group > :not(.gh):nth-child(even)`), so a group reads
+  like a small striped table and the section margins rows normally carry are
+  zeroed inside a group to keep the bands contiguous.
+- #ctxmenu widened 248 -> 264px (a group costs its rows 8px on each side) and
+  the openMenu fallback width follows, so the 3-button rows keep their line.
+- the headless row finders were switched to a recursive walk (sliderRows /
+  rowByLabel in test/run.js) - rows are addressed by label text, never by
+  position, which is why wrapping them in groups cost nothing else.
+
+### 2. gear tree list under the level sliders
+- gui.js owns it (buildGearTree / makeTreeNode / highlightTree /
+  refreshTreeRow): one row per gear, breadth-first, one `.tlev` header per
+  level counting its gears, indent by depth, `#0.1.2` = root index then child
+  index at every level (read off the live parent links, so it cannot drift),
+  then 'd <diameter> v <speed>' (+ ' t <tilt>' when a 3D scene has one) and
+  two colour dots = the enabled pencil slots (an off slot is hidden, so a gear
+  without a pencil reads as a bare row, which is what it is).
+- refresh: rebuildLevels() ends with buildGearTree() - every structural change
+  in main.js already calls it (addSubGear / applyLevel / removeGear /
+  symmetry commit / loadObject / resetScene), so the list cannot go stale. a
+  menu edit does NOT rebuild (that would fight an active drag): edit() calls
+  refreshTreeRow(gear), which rewrites the rows of that gear AND of its
+  subtree, because a diameter rescales everything mounted on it. under
+  symmetry the edit was mirrored to the whole level (App.applySymmetry), so
+  that branch rebuilds the list instead - applySymmetry already clones the
+  sibling sub-trees, the rows are the cheaper half of that work.
+- selection is one concept, not two: the highlighted row is the gear whose
+  menu is open, so a canvas pick (which goes through openMenu) highlights the
+  row for free, and clicking a row calls openMenu at the row's right edge -
+  which in 3D also retargets the orbit camera the same way a canvas pick does.
+  scrollIntoView({block:'nearest'}) with a shared scratch object, feature-
+  guarded because the DOM stub has no such method.
+
+### 3. the hue bug: it measured a distance that cannot change
+- the report was 'colors are not updated but constant'. the measurement was
+  literally right (gear centre to parent centre) but that quantity is
+  CONSTANT BY CONSTRUCTION: pose3/stateAt place a child at
+  orbitR = |parent.r +/- gear.r| from the parent centre, so in 2D *and* under a
+  3D tilt the distance never moves and its rate is identically 0 - the old
+  help text ("both move only when a gear has a 3D tilt speed") was simply
+  false, and 'speed' always sat on the base hue.
+- fix per user: a second select `hue anchor` (App.circleHueTarget, persisted,
+  default 'grandparent') chooses WHAT the distance is measured to -
+  parent (kept: a static per-gear tint, and the only sane choice for a
+  2-gear scene), grandparent (a level-1 gear has none, so its parent stands
+  in), or the root of its own tree (a fixed origin, so 'distance' reads as the
+  radial position in the figure). main.js hueAnchor(g) + gearDistTo(g, a, is3)
+  replace gearParentDist(); updateGuideHue measures to the anchor, and both
+  'distance' and 'speed' use that same number, so the pair stays coherent.
+- primeGuideHue() (via setCircleHue / setCircleHueTarget / afterSceneChange /
+  setDim) restarts distPrev at the current geometry AND marks hueRateCold, so
+  the first frame after a switch holds instead of diffing - otherwise every
+  anchor change would flash one giant rate (that is the same trap as the raw
+  per-frame difference the smoothing exists to kill).
+- HUE_DIST_TURNS / HUE_RATE_TURNS unchanged: distances to a farther anchor are
+  bigger, so the hue cycles faster, which is what makes the animation readable.
+
+### tests (372 checks, +54)
+- guiGroups: every top-level panel child is a group or the footer help line,
+  every group has a title band + rows, the transport group really holds
+  pause+clear+reset (+ anim speed) and no save button, the scene group holds
+  copy/save/open/paste + the autosave line, the view group holds the toggles
+  AND both hue selects, the tree group holds symmetry + levels + reset; the
+  menu is 'geometry,pen,trail,gears'; index.html carries the stripe rules.
+- gearTreeList: rows == gears (level by level, roots first), paths, level
+  headers with counts, the pencil dot, row click -> that gear's menu, exactly
+  one highlighted row, a menu diameter edit rewrites the row (a mirrored
+  symmetry edit rewrites the whole level's), a CANVAS pick
+  (synthesized pointerdown at the projected centre, pointercancel after)
+  highlights the row, and applyLevel / removeGear keep the list in step. the
+  canvas pick uses a one-gear scene on purpose: hitGear keeps the SMALLEST
+  circle under the pointer, so overlapping gears steal the pick.
+- circleHueAnchor: asserts the *bug* too - with the parent anchor two
+  consecutive rendered frames produce the identical colour list (the old
+  behaviour), with the root anchor they differ; a root gear measures 0; a
+  level-1 gear around the root stays put while level-2 gears move; 'speed'
+  reports a real rate only where the distance moves; switching anchors zeroes
+  the rates and the first frame holds; the same holds in 3D (parent constant,
+  root moving); persistence through the app bag + a booted scene + the real
+  <select> driving App.setCircleHueTarget. colours are read off the real
+  R.circle call (the hue outline is the only circle drawn at alpha 0.85) so
+  the check covers the paint, not just the scratch fields.
+- also fixed a FLAKY pre-existing check: gestureQualityFollowsFrameTime
+  measured real CPU time, so a loaded machine could trip the 20 ms
+  slow-frame threshold and 'a large ring at 60 fps is still drawn in full'
+  failed at random. the block now pins the sandbox performance.now to a
+  constant, which leaves the rAF interval (the value the test feeds) as the
+  only measured cost - the check is about ring SIZE, not about how fast node
+  renders.
+- stub-dom: unchanged this round (the tree only needs children/textContent/
+  classList, all already stubbed; getBoundingClientRect's fixed 600x600 is
+  why the row click lands at 610,0 and openMenu clamps it).
+
 ## next
 - optional polish (from the 0.6 plan's future-work list): real near-plane
   segment clipping (currently edge-clamped streaks when inside the figure), 

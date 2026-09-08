@@ -233,6 +233,21 @@ function scene() {
 
 // ---- live app (real main.js/gui.js on DOM stubs) ---------------------
 var w = boot();
+
+// every slider row of a stub subtree (panel or gear menu), however deeply the
+// group boxes nest it: a row is found by its label text, never by position.
+function sliderRows(node, out) {
+	out = out || [];
+	if (!node) return out;
+	if (node.input && node.labelEl) out.push(node);
+	for (var i = 0; i < (node.children || []).length; i++) sliderRows(node.children[i], out);
+	return out;
+}
+function rowByLabel(node, label) {
+	var rs = sliderRows(node);
+	for (var i = 0; i < rs.length; i++) if (rs[i].labelEl.textContent.indexOf(label) === 0) return rs[i];
+	return null;
+}
 var App = w.App;
 ok(!!App, 'app booted');
 ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
@@ -392,19 +407,8 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	var GUI = w.GUI;
 	var gear = App.allGears[1];
 
-	function rows() {
-		var out = [];
-		var kids = w.byId.ctxmenu.children;
-		for (var i = 0; i < kids.length; i++) if (kids[i].input) out.push(kids[i]);
-		return out;
-	}
-	function row(label) {
-		var rs = rows();
-		for (var i = 0; i < rs.length; i++) {
-			if (rs[i].labelEl && rs[i].labelEl.textContent.indexOf(label) === 0) return rs[i];
-		}
-		return null;
-	}
+	function rows() { return sliderRows(w.byId.ctxmenu); }
+	function row(label) { return rowByLabel(w.byId.ctxmenu, label); }
 
 	GUI.openMenu(gear, 100, 100);
 	ok(GUI.isMenuOpen(), 'context menu opens');
@@ -863,13 +867,9 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	// context menu: trail length is animate-only
 	App.setMode('animate');
 	w.GUI.openMenu(App.allGears[1], 50, 50);
-	var rows = w.byId.ctxmenu.children, hasTrail = false;
-	for (var i = 0; i < rows.length; i++) if (rows[i].labelEl && rows[i].labelEl.textContent.indexOf('trail length') === 0) hasTrail = true;
-	ok(hasTrail, 'animate mode: menu has the trail length slider');
+	ok(!!rowByLabel(w.byId.ctxmenu, 'trail length'), 'animate mode: menu has the trail length slider');
 	App.setMode('whole');
-	rows = w.byId.ctxmenu.children; hasTrail = false;
-	for (var j = 0; j < rows.length; j++) if (rows[j].labelEl && rows[j].labelEl.textContent.indexOf('trail length') === 0) hasTrail = true;
-	ok(!hasTrail, 'whole mode: no trail length slider (it has no meaning there)');
+	ok(!rowByLabel(w.byId.ctxmenu, 'trail length'), 'whole mode: no trail length slider (it has no meaning there)');
 	App.setMode('animate');
 	w.GUI.closeMenu();
 	App.resetScene();
@@ -1114,6 +1114,13 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 // only after a gesture frame actually costs more than 20 ms, and taken back
 // once frames are fast again.
 (function gestureQualityFollowsFrameTime() {
+	// the CPU timer is pinned to 0 for this block: the frame cost the
+	// controller sees is then exactly the rAF interval the test feeds it, so a
+	// loaded machine cannot trip the 20 ms slow-frame threshold on its own.
+	// (this check is about RING SIZE no longer decimating, not about how fast
+	// node renders under test.)
+	var realNow = w.performance.now;
+	w.performance.now = function () { return 0; };
 	App.resetScene();
 	App.setDim('3d');
 	var g = App.roots[0].children[0];
@@ -1150,6 +1157,7 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	w.tick(4, 60);
 	ok(App.gestureQuality().budget === 5000, 'debug override pins the gesture budget', App.gestureQuality().budget);
 	delete w.SPIRO_GESTURE_SEG_BUDGET;
+	w.performance.now = realNow;
 	App.setAutoRotate(false);
 	App.setDim('2d');
 	App.resetScene();
@@ -1720,6 +1728,271 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
+})();
+
+// ---- 0.7.8: the panel + gear menu are split into striped groups --------
+(function guiGroups() {
+	var fs = require('fs'), path = require('path');
+	function text(n) {
+		var s = n.textContent || '';
+		for (var i = 0; i < (n.children || []).length; i++) s += ' ' + text(n.children[i]);
+		return s;
+	}
+	function groups(node, out) {
+		out = out || [];
+		for (var i = 0; i < (node.children || []).length; i++) {
+			var c = node.children[i];
+			if (c.className === 'group') out.push(c); else groups(c, out);
+		}
+		return out;
+	}
+	function byTitle(gs, title) {
+		for (var i = 0; i < gs.length; i++) {
+			var h = gs[i].children[0];
+			if (h && h.className === 'gh' && h.textContent === title) return gs[i];
+		}
+		return null;
+	}
+	// every section of the panel lives in a group (only the footer help line
+	// hangs loose), every group is titled and holds rows to stripe
+	var loose = [];
+	for (var i = 0; i < w.byId.panel.children.length; i++) {
+		var c = w.byId.panel.children[i];
+		if (c.className !== 'group' && c.className !== 'help') loose.push(c.className || c.tagName);
+	}
+	ok(loose.length === 0, 'panel: every section sits in a group', loose.join(','));
+	var gs = groups(w.byId.panel);
+	ok(gs.length >= 7, 'panel: several logical groups', gs.length);
+	var titled = 0, withRows = 0;
+	for (var j = 0; j < gs.length; j++) {
+		if (gs[j].children[0] && gs[j].children[0].className === 'gh') titled++;
+		if (gs[j].children.length >= 2) withRows++;
+	}
+	ok(titled === gs.length, 'panel: every group has a title band');
+	ok(withRows === gs.length, 'panel: every group has rows under its title');
+	// the groups the task named: the transport in one, everything save-related
+	// in the next - and nothing shared between them
+	var play = byTitle(gs, 'playback'), scene = byTitle(gs, 'scene');
+	ok(!!play && !!scene, 'panel: a playback group and a scene group');
+	ok(/play \(space\)|pause \(space\)/.test(text(play)) && text(play).indexOf('clear (c)') >= 0 &&
+		text(play).indexOf('reset (x)') >= 0, 'playback group: pause + clear + reset together');
+	ok(text(play).indexOf('anim speed') >= 0, 'playback group: the global speed knob');
+	ok(text(scene).indexOf('copy (s)') >= 0 && text(scene).indexOf('save (d)') >= 0 &&
+		text(scene).indexOf('open (o)') >= 0 && text(scene).indexOf('paste (p)') >= 0,
+		'scene group: the whole save / load row');
+	ok(text(scene).indexOf('autosave') >= 0, 'scene group: the autosave status line');
+	ok(text(play).indexOf('save (d)') < 0 && text(scene).indexOf('reset (x)') < 0,
+		'panel: transport and save stay in separate groups');
+	var view = byTitle(gs, 'view'), tree = byTitle(gs, 'tree');
+	ok(text(view).indexOf('circles') >= 0 && text(view).indexOf('dial') >= 0 &&
+		text(view).indexOf('points') >= 0 && text(view).indexOf('3D axis') >= 0,
+		'view group: the draw toggles together');
+	ok(text(tree).indexOf('symmetry') >= 0 && text(tree).indexOf('lvl 1') >= 0 &&
+		text(tree).indexOf('reset levels') >= 0, 'tree group: symmetry + level sliders + reset');
+	// the gear menu follows the same shape: a drag title over groups only
+	App.resetScene();
+	w.GUI.openMenu(App.allGears[1], 100, 100);
+	var mg = groups(w.byId.ctxmenu);
+	var mTitles = mg.map(function (g) { return g.children[0].textContent; }).join(',');
+	ok(mTitles === 'geometry,pen,trail,gears', 'gear menu: geometry / pen / trail / gears groups', mTitles);
+	var mLoose = 0;
+	for (var m = 0; m < w.byId.ctxmenu.children.length; m++) {
+		var cm = w.byId.ctxmenu.children[m].className;
+		if (cm !== 'group' && cm.indexOf('ptitle') < 0) mLoose++;
+	}
+	ok(mLoose === 0, 'gear menu: only the drag title hangs outside the groups');
+	w.GUI.closeMenu();
+	// the stripes themselves are CSS (one band per row of a group)
+	var css = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+	ok(css.indexOf('.group > :not(.gh):nth-child(even)') >= 0, 'CSS: striped rows inside a group');
+	ok(css.indexOf('.group > .gh') >= 0, 'CSS: the group title band');
+})();
+
+// ---- 0.7.8: the gear tree under the level sliders ----------------------
+(function gearTreeList() {
+	var GUI = w.GUI;
+	function dep(g) { var d = 0; while (g.parent) { g = g.parent; d++; } return d; }
+	App.resetScene();
+	App.applyLevel(1, 3);
+	App.applyLevel(2, 2);                 // 10 gears: 1 root, 3 at level 1, 6 at level 2
+	var rows = GUI.gearTree();
+	ok(rows.length === App.allGears.length, 'tree: one row per gear', rows.length + '/' + App.allGears.length);
+	var covered = 0;
+	for (var i = 0; i < App.allGears.length; i++)
+		for (var j = 0; j < rows.length; j++) if (rows[j].gear === App.allGears[i]) { covered++; break; }
+	ok(covered === rows.length, 'tree: every gear appears exactly once');
+	var byLevel = true;
+	for (var k = 1; k < rows.length; k++) if (dep(rows[k].gear) < dep(rows[k - 1].gear)) byLevel = false;
+	ok(byLevel, 'tree: the rows run level by level');
+	ok(rows[0].gear === App.roots[0], 'tree: the roots lead');
+	var paths = rows.map(function (r) { return r.node.children[2].textContent; });
+	ok(paths[0] === '#0' && paths[1] === '#0.0' && paths[4] === '#0.0.0' && paths[paths.length - 1] === '#0.2.1',
+		'tree: each row names its place in the tree', paths.join(' '));
+	var heads = [];
+	(function walk(n) {
+		for (var i = 0; i < (n.children || []).length; i++) {
+			if (n.children[i].className === 'tlev') heads.push(n.children[i].textContent);
+			else walk(n.children[i]);
+		}
+	})(w.byId.panel);
+	ok(heads.join('|') === 'main gears - 1|lvl 1 - 3|lvl 2 - 6',
+		'tree: one header per level, counting its gears', heads.join('|'));
+	var chip = rows[1].node.children[0];
+	ok(chip.className === 'chip' && /^#[0-9a-f]{6}$/i.test(String(chip.style.background)),
+		'tree: a row carries its pencil colour as a dot', chip.style.background);
+	// click a row -> that gear's menu opens and the row lights up (one row only)
+	var pick = rows[4];
+	pick.node.dispatch('click');
+	ok(GUI.isMenuOpen() && GUI.menuGear() === pick.gear, 'tree: clicking a row opens that gear menu');
+	var sel = rows.filter(function (r) { return r.node.classList.contains('sel'); });
+	ok(sel.length === 1 && sel[0] === pick, 'tree: exactly the picked row is highlighted');
+	// a menu edit follows into the row, without a rebuild
+	var dia = rowByLabel(w.byId.ctxmenu, 'diameter');
+	dia.input.value = 0.4;
+	dia.input.dispatch('input');
+	ok(pick.info.textContent.indexOf('d 0.4') === 0, 'tree: the row follows the diameter slider', pick.info.textContent);
+	GUI.closeMenu();
+	ok(rows.filter(function (r) { return r.node.classList.contains('sel'); }).length === 0,
+		'tree: closing the menu clears the highlight');
+	// a mirrored (symmetry) edit touched the whole level, so every row follows
+	App.setSymmetry(true);
+	GUI.openMenu(App.roots[0].children[0], 20, 20);
+	dia = rowByLabel(w.byId.ctxmenu, 'diameter');
+	dia.input.value = 0.3;
+	dia.input.dispatch('input');
+	var lvl1 = GUI.gearTree().filter(function (r) { return r.gear.parent === App.roots[0]; });
+	var mirrored = lvl1.length === 3 && lvl1.every(function (r) {
+		return r.info.textContent.indexOf('d 0.3') === 0;
+	});
+	ok(mirrored, 'tree: a symmetry edit refreshes every sibling row',
+		lvl1.map(function (r) { return r.info.textContent; }).join(' | '));
+	GUI.closeMenu();
+	App.setSymmetry(false);
+	// the same highlight from the other direction: a pick ON THE CANVAS. a
+	// one-gear scene keeps the hit test unambiguous (the SMALLEST circle under
+	// the pointer wins, so overlapping gears would steal the pick).
+	App.applyLevel(1, 0);
+	var root = App.roots[0];
+	ok(GUI.gearTree().length === 1, 'tree: emptying level 1 leaves just the root row');
+	w.byId.c.dispatch('pointerdown', {
+		pointerId: 1, pointerType: 'mouse', button: 0,
+		clientX: App.cx0 + (root.cx + App.view.pan[0]) * App.S,
+		clientY: App.cy0 + (root.cy + App.view.pan[1]) * App.Sy
+	});
+	ok(GUI.menuGear() === root, 'canvas: clicking a gear still opens its menu');
+	ok(GUI.gearTree()[0].node.classList.contains('sel'), 'canvas: the picked gear lights up in the tree');
+	w.byId.c.dispatch('pointercancel', { pointerId: 1 });
+	GUI.closeMenu();
+	// and the list tracks the tree itself
+	App.applyLevel(1, 3);
+	ok(GUI.gearTree().length === App.allGears.length, 'tree: growing a level adds its rows', GUI.gearTree().length);
+	App.applyLevel(2, 2);
+	ok(GUI.gearTree().length === App.allGears.length, 'tree: a new level brings its rows', GUI.gearTree().length);
+	App.removeGear(App.roots[0].children[0]);
+	ok(GUI.gearTree().length === App.allGears.length,
+		'tree: removing a gear drops its sub-tree rows too', GUI.gearTree().length);
+	App.resetScene();
+})();
+
+// ---- 0.7.8 fix: the hue distance measures to a CHOSEN anchor -----------
+(function circleHueAnchor() {
+	function dep(g) { var d = 0; while (g.parent) { g = g.parent; d++; } return d; }
+	if (App.paused) App.togglePause();
+	App.setMode('animate');
+	App.resetScene();
+	App.applyLevel(1, 2);
+	App.applyLevel(2, 2);                 // 7 gears: 1 root, 2 at level 1, 4 at level 2
+	App.setCircleHue('distance');
+	ok(App.circleHueTarget === 'grandparent',
+		'the hue anchor defaults one level further out than the parent');
+	// the outline colours, read off the real draw call: the hue outline is the
+	// only circle drawn with the hue alpha (0.85). every call of snapshot()
+	// renders exactly one frame.
+	function snapshot() {
+		var cols = [];
+		var real = w.R.circle;
+		w.R.circle = function (x, y, rad, lw, r, g, b, a) {
+			if (a === 0.85) cols.push(r.toFixed(4) + ',' + g.toFixed(4) + ',' + b.toFixed(4));
+			return real.apply(this, arguments);
+		};
+		w.tick(1, 32);
+		w.R.circle = real;
+		return cols.sort().join(' ');
+	}
+	// the parent anchor is CONSTANT by construction - the mount is rigid, so
+	// the centre distance is |R +/- r| forever, in 2D and with a 3D tilt alike.
+	// that is what 0.7.7 shipped and why its colours never moved.
+	App.setCircleHueTarget('parent');
+	w.tick(2, 32);
+	var s0 = snapshot();
+	ok(s0.length > 0 && s0 === snapshot(), 'parent anchor: the guide colours stay put frame after frame');
+	ok(App.allGears[1].distPrev > 0, 'parent anchor: a child still measures its mount radius');
+	var deep = App.allGears.filter(function (g) { return dep(g) === 2; });
+	var l1 = App.allGears[1];
+	// the root anchor: a level-1 gear sits on a fixed circle around it, the
+	// level-2 ones ride in and out - and the colour follows them.
+	App.setCircleHueTarget('root');
+	w.tick(2, 32);
+	ok(snapshot() !== snapshot(), 'root anchor: the guide colours change from frame to frame');
+	ok(App.allGears[0].distPrev === 0, 'a gear with no anchor measures 0 (the base hue)');
+	var was2 = deep[0].distPrev, was1 = l1.distPrev;
+	w.tick(6, 32);
+	ok(Math.abs(deep[0].distPrev - was2) > 1e-4,
+		'root anchor: a level-2 distance really moves', Math.abs(deep[0].distPrev - was2));
+	ok(Math.abs(l1.distPrev - was1) < 1e-9,
+		'root anchor: a level-1 gear stays on its fixed circle');
+	// 'speed' is the rate of the SAME measurement
+	App.setCircleHue('speed');
+	w.tick(30, 32);
+	var moving = 0;
+	for (var i = 0; i < deep.length; i++) if (Math.abs(deep[i].distRate) > 1e-3) moving++;
+	ok(moving === deep.length, 'speed: every moving gear reports a real rate', moving + '/' + deep.length);
+	// switching the anchor re-primes the scratch: the jump is never read as a rate
+	App.setCircleHueTarget('parent');
+	var primed = true;
+	for (var k = 0; k < App.allGears.length; k++) if (App.allGears[k].distRate !== 0) primed = false;
+	ok(primed, 'switching the anchor zeroes every rate');
+	w.tick(1, 32);
+	ok(deep[0].distRate === 0, 'the first frame after a switch holds, it does not diff');
+	w.tick(40, 32);
+	var mx = 0;
+	for (var m = 0; m < App.allGears.length; m++) mx = Math.max(mx, Math.abs(App.allGears[m].distRate));
+	ok(mx < 1e-9, 'a constant anchor leaves the rate at nothing (no fake animation)', mx);
+	// the same measurement through the 3D centres: the parent anchor stays
+	// constant there too, the root one keeps moving (0 tilt reproduces the
+	// flat figure standing in XZ).
+	App.setCircleHue('distance');
+	App.setDim('3d');
+	w.tick(2, 32);
+	ok(snapshot() === snapshot(), '3D: the parent anchor is constant there as well');
+	App.setCircleHueTarget('root');
+	var was3 = deep[0].distPrev;
+	w.tick(2, 32);
+	ok(Math.abs(deep[0].distPrev - was3) > 1e-4, '3D: the distance is measured on the 3D centres');
+	ok(snapshot() !== snapshot(), '3D: the anchor distance keeps repainting the outline colours');
+	App.setDim('2d');
+	// persisted next to the hue mode, and the panel select drives it
+	var bag = Settings.snapshotApp(App);
+	ok(bag.circleHue === 'distance' && bag.circleHueTarget === 'root', 'the app bag carries hue + anchor');
+	ok(Settings.sanitizeApp({ circleHueTarget: 'moon' }).circleHueTarget === 'grandparent',
+		'garbage anchor falls back to the default');
+	var saved = Gear.serialize(App.roots, App.view, App.globalSpeed, App.colorMode, bag);
+	var w2 = boot({ settings: saved });
+	ok(w2.App.circleHue === 'distance' && w2.App.circleHueTarget === 'root',
+		'a saved scene restores hue mode + anchor');
+	var anchorSel = null;
+	(function walk(n) {
+		if (anchorSel || !n || !n.children) return;
+		if (n.tagName === 'SELECT' && n.children.some &&
+			n.children.some(function (o) { return o.value === 'grandparent'; })) { anchorSel = n; return; }
+		for (var q = 0; q < n.children.length; q++) walk(n.children[q]);
+	})(w2.byId.panel);
+	ok(!!anchorSel, 'panel: the hue anchor select exists');
+	ok(anchorSel.value === 'root', 'the select syncs to the loaded anchor');
+	anchorSel.value = 'parent';
+	anchorSel.dispatch('change');
+	ok(w2.App.circleHueTarget === 'parent', 'the select drives App.setCircleHueTarget');
+	App.resetScene();
 })();
 
 console.log((fail ? 'FAILED' : 'OK') + ': ' + pass + ' passed, ' + fail + ' failed');

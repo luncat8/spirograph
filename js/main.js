@@ -54,7 +54,8 @@
 		sphereColor: '#9fd8ff',
 		sphereParams: Settings.sphereDefaults(),  // per-shader slider bags
 		background: 'black',   // full-screen background (Settings.BACKGROUNDS)
-		circleHue: 'off'       // guide-circle hue source (Settings.CIRCLE_HUES)
+		circleHue: 'off',      // guide-circle hue source (Settings.CIRCLE_HUES)
+		circleHueTarget: 'grandparent'   // hue distance anchor (CIRCLE_HUE_TARGETS)
 	};
 
 	var TAU = Math.PI * 2;
@@ -337,6 +338,7 @@
 
 	// after a structural scene change, whole mode must recompute (others just repaint).
 	function afterSceneChange() {
+		primeGuideHue();     // new / moved gears: the hue scratch starts fresh
 		if (App.mode === 'whole') App.recomputeWhole();
 		else { markDirty(); if (App.overlay.on) App.invalidateOverlay(); }
 	}
@@ -510,6 +512,7 @@
 			GUI.setDim && GUI.setDim('2d');
 		}
 		viewDirty = true;
+		primeGuideHue();     // 2D and 3D measure different coordinates
 		// whole mode re-detects + re-bakes (stride changed); animate just retraces.
 		if (App.mode === 'whole') App.recomputeWhole();
 		else { markDirty(); if (App.overlay.on) App.invalidateOverlay(); }
@@ -605,11 +608,17 @@
 		if (!Settings.BACKGROUNDS[v]) return;
 		App.background = v; markDirty();
 	};
-	// guide-circle hue source (Settings.CIRCLE_HUES). the hue is computed per
-	// frame from the live gear positions, so switching it only needs a repaint.
+	// guide-circle hue source (Settings.CIRCLE_HUES) + its anchor
+	// (Settings.CIRCLE_HUE_TARGETS). the hue is computed per frame from the
+	// live gear positions, so switching either only needs a repaint - but both
+	// re-prime the distance scratch, or the change itself shows up as a rate.
 	App.setCircleHue = function (v) {
 		if (!Settings.CIRCLE_HUES[v]) return;
-		App.circleHue = v; markDirty();
+		App.circleHue = v; primeGuideHue(); markDirty();
+	};
+	App.setCircleHueTarget = function (v) {
+		if (!Settings.CIRCLE_HUE_TARGETS[v]) return;
+		App.circleHueTarget = v; primeGuideHue(); markDirty();
 	};
 	// glass sphere shells (view-only; drawn live each render, no overlay bake).
 	// sphereShader selects the ray tracer ('off' | 'hollow' | 'layers');
@@ -1721,39 +1730,70 @@
 	// ---- guide-circle hue animation ---------------------------------------
 	// App.circleHue picks what drives the colour of the `circles` outlines:
 	//   off      - the static guide colour
-	//   distance - the gear's distance from its parent gear's centre
+	//   distance - how far the gear's centre sits from the hue ANCHOR
 	//   speed    - how fast that distance changes (d distance / dt)
-	// both sources are refreshed once per render; a root gear has no parent,
-	// so its distance and rate are 0 - the base hue of the wheel. in flat 2D a
-	// child keeps a constant distance (the gears stay tangent), so 'distance'
-	// reads as a per-level rainbow and 'speed' settles on the base hue; with a
-	// 3D tilt (speed2) the mounting distance really changes and both animate.
+	// App.circleHueTarget picks the anchor gear: the own parent, the parent's
+	// parent, or the root of the tree. the choice matters: a gear is mounted
+	// RIGIDLY on its parent, so its distance to that centre is |R +/- r|
+	// forever - in flat 2D and with a 3D tilt alike - which tints the gears
+	// apart but never animates, and leaves 'speed' at the base hue. one level
+	// further out the anchor itself moves and the hue flows; the root anchor
+	// reads the fixed radial distance inside the figure. both sources refresh
+	// once per render; a gear with no anchor (a lone root) measures 0.
 	var HUE_DIST_TURNS = 1.6;      // hue cycles per world unit of distance
 	var HUE_RATE_TURNS = 0.5;      // hue cycles per (world unit / second)
 	var HUE_SAT = 0.8;
 	var hueRgb = [0, 0, 0];        // shared scratch (no per-frame allocation)
 	var frameDt = 0;               // dt of the frame being rendered
+	var hueRateCold = true;        // first frame after a prime: no rate yet
 
-	function gearParentDist(g, is3) {
-		var p = g.parent;
-		if (!p) return 0;
-		if (!is3) return Math.hypot(g.cx - p.cx, g.cy - p.cy);
-		var dx = g.c3[0] - p.c3[0], dy = g.c3[1] - p.c3[1], dz = g.c3[2] - p.c3[2];
+	// the gear whose centre the hue distance is measured to (null = none).
+	function hueAnchor(g) {
+		if (!g.parent) return null;
+		var t = App.circleHueTarget;
+		if (t === 'grandparent') return g.parent.parent || g.parent;
+		if (t === 'root') {
+			var a = g.parent;
+			while (a.parent) a = a.parent;
+			return a;
+		}
+		return g.parent;
+	}
+
+	// centre-to-centre world distance, in the dimension being drawn.
+	function gearDistTo(g, a, is3) {
+		if (!a) return 0;
+		if (!is3) return Math.hypot(g.cx - a.cx, g.cy - a.cy);
+		var dx = g.c3[0] - a.c3[0], dy = g.c3[1] - a.c3[1], dz = g.c3[2] - a.c3[2];
 		return Math.sqrt(dx * dx + dy * dy + dz * dz);
 	}
 
-	// refresh every gear's distance from its parent's centre plus that
-	// distance's smoothed rate of change (a raw per-frame difference is far
-	// too noisy to read as a colour).
+	// refresh every gear's hue distance plus that distance's smoothed rate of
+	// change (a raw per-frame difference is far too noisy to read as a colour).
 	function updateGuideHue(is3) {
 		if (App.circleHue === 'off') return;
 		var smooth = Math.min(1, frameDt * 8);       // ~125 ms of smoothing
 		for (var i = 0; i < App.allGears.length; i++) {
 			var g = App.allGears[i];
-			var d = gearParentDist(g, is3);
-			if (frameDt > 0) g.distRate += ((d - g.distPrev) / frameDt - g.distRate) * smooth;
+			var d = gearDistTo(g, hueAnchor(g), is3);
+			if (frameDt > 0 && !hueRateCold) g.distRate += ((d - g.distPrev) / frameDt - g.distRate) * smooth;
 			g.distPrev = d;
 		}
+		hueRateCold = false;
+	}
+
+	// restart the distance/rate scratch from the CURRENT geometry: switching
+	// the hue on, or moving it to another anchor, changes what `distPrev`
+	// holds - without this the first frame reads the whole jump as a rate.
+	function primeGuideHue() {
+		if (App.circleHue === 'off') return;
+		var is3 = App.dim === '3d';
+		for (var i = 0; i < App.allGears.length; i++) {
+			var g = App.allGears[i];
+			g.distPrev = gearDistTo(g, hueAnchor(g), is3);
+			g.distRate = 0;
+		}
+		hueRateCold = true;
 	}
 
 	// outline colour of one gear: null when the hue animation is off (the

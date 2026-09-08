@@ -22,5 +22,5 @@ previous commit implemented
 	distance gear from parent gear center
 	current gear speed related to parent gear center (change distance per dt)
 
-but it looks like colors are not updated but constant. this is because it calculate not distance gear center from parent gear center but wrongly count something like current gear size
+i understand. need another dropdown to determine target. parent distance always const. so we need parent of parent as option 1 and root center as option 2
 	

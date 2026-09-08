@@ -119,15 +119,30 @@
 	// ---- guide-circle hue animation -------------------------------------
 	// what drives the colour of the `circles` outlines (main.js):
 	//   off      : the static guide colour
-	//   distance : the gear's distance from its parent gear's centre
+	//   distance : how far a gear centre sits from the hue ANCHOR gear
 	//   speed    : how fast that distance changes (d distance / dt)
-	// a root gear has no parent: its distance is 0 (the wheel's base hue).
+	// the anchor is an independent second choice (CIRCLE_HUE_TARGETS) - see
+	// there for why the own parent is the boring one. a gear with no anchor
+	// (a lone root) measures 0: the wheel's base hue.
 	var CIRCLE_HUES = {
 		off: { label: 'off' },
-		distance: { label: 'distance from parent' },
-		speed: { label: 'speed at parent centre' }
+		distance: { label: 'distance' },
+		speed: { label: 'speed (d distance/dt)' }
 	};
 	var CIRCLE_HUE_IDS = ['off', 'distance', 'speed'];
+
+	// which gear's centre the hue distance is measured to:
+	//   parent      : the own parent - a gear is mounted RIGIDLY on it, so
+	//                 that distance never changes (constant tint per gear)
+	//   grandparent : one level further up; a level-1 gear has none, so its
+	//                 parent (the root) stands in
+	//   root        : the root gear of its own tree (the world origin), fixed
+	var CIRCLE_HUE_TARGETS = {
+		parent: { label: 'parent centre (constant)' },
+		grandparent: { label: 'parent\'s parent' },
+		root: { label: 'root centre' }
+	};
+	var CIRCLE_HUE_TARGET_IDS = ['parent', 'grandparent', 'root'];
 
 	// coerce a loaded flag to a real boolean. default-on fields stay ON for
 	// every value except an explicit false / 0 (matches the old loader, which
@@ -220,7 +235,17 @@
 			key: 'circleHue', def: 'off', persist: true,
 			get: function (A) { return A.circleHue; },
 			clean: function (v) { return CIRCLE_HUES[v] ? v : undefined; },
-			apply: function (s, A, GUI) { A.circleHue = s.circleHue; GUI.setCircleHue(s.circleHue); A.markDirty(); }
+			apply: function (s, A, GUI) { A.setCircleHue(s.circleHue); GUI.setCircleHue(s.circleHue); }
+		},
+		{
+			// what the hue distance is measured to (see CIRCLE_HUE_TARGETS).
+			// both hue fields go through their App setters: they re-prime the
+			// distance/rate scratch, so switching never reads the whole jump
+			// as a rate spike on the first frame.
+			key: 'circleHueTarget', def: 'grandparent', persist: true,
+			get: function (A) { return A.circleHueTarget; },
+			clean: function (v) { return CIRCLE_HUE_TARGETS[v] ? v : undefined; },
+			apply: function (s, A, GUI) { A.setCircleHueTarget(s.circleHueTarget); GUI.setCircleHueTarget(s.circleHueTarget); }
 		},
 		{
 			key: 'showDial', def: false, persist: true,
@@ -383,6 +408,8 @@
 		BACKGROUND_IDS: BACKGROUND_IDS,
 		CIRCLE_HUES: CIRCLE_HUES,
 		CIRCLE_HUE_IDS: CIRCLE_HUE_IDS,
+		CIRCLE_HUE_TARGETS: CIRCLE_HUE_TARGETS,
+		CIRCLE_HUE_TARGET_IDS: CIRCLE_HUE_TARGET_IDS,
 		clampSphereParam: clampSphereParam,
 		sphereDefaults: sphereDefaults,
 		sanitizeSphereParams: sanitizeSphereParams,

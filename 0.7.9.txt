@@ -1,0 +1,27 @@
+1
+
+add 1 slider multiplayer k for 'circles hue' so i can adjust what distance or speed change cause what change of hue
+
+2
+
+improve gear tree list
+group not by level but by parent gear, as hierarchical tree
+in symmetry mode show only 1st gear per level
+
+3
+
+ensure glass shader works properly
+Reference shader file: https://github.com/luncat8/glass-spheres-shader/blob/main/shaders/hollow_bubbles.js
+
+
+default settings:
+
+wall 0.115
+ior 1.45
+tint 0.70
+iris 0.55
+disp 0.35
+layers 6
+
+currently it looks different then Reference with same settings in gui.
+
