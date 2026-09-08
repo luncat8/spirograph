@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
-"""Link the spirograph scene files in this directory into index.html.
+"""Link the spirograph scene files in save/ into index.html.
 
 The app runs from file:// and cannot list a directory, so the panel's preset
 dropdown is fed by what index.html loads. This script (run from the directory
 that holds index.html) is the MULTI-FILE half of the preset system
-(presets_merge_to_default.js.py is the single-file half):
+(presets_merge_to_default.js.py is the single-file half); both work on the
+save/ folder:
 
-  - finds every saved scene file in the working directory (*.js SETTINGS
-    modules; default.js, *.delete-me and anything that does not parse as a
-    scene are skipped - raw *.json cannot be a <script> tag and is left to
-    the merge script),
+  - finds every saved scene file in save/ (*.js SETTINGS modules;
+    default.js, *.delete-me and anything that does not parse as a scene are
+    skipped - raw *.json cannot be a <script> tag and is left to the merge
+    script),
   - converts each one into a preset module: the scene is kept as-is, but the
     file contributes to window.PRESETS instead of overwriting
     window.SETTINGS (several preset files must not clobber the startup
     scene) and a `// preset: NAME.js` marker is stamped as its first line,
-  - inserts a <script src="NAME.js" class="preset"></script> tag into
-    index.html (between default.js and js/main.js) for every file that has
-    none,
+  - inserts a <script src="save/NAME.js" class="preset"></script> tag into
+    index.html (between save/default.js and js/main.js) for every file that
+    has none,
   - keeps the links in sync with the files on every run: a RENAMED file
     (recognized by its marker) moves its tag to the new name, and a DELETED
     file drops its tag. delete or rename a preset, run the script, done.
@@ -24,7 +25,7 @@ that holds index.html) is the MULTI-FILE half of the preset system
 a second run changes nothing: tags and markers are already in sync, so the
 files are untouched.
 
-Usage:  python3 link_presets_to_html.py     (from the app directory)
+Usage:  python3 save/link_presets_to_html.py     (from the app directory)
 """
 
 import json
@@ -32,6 +33,8 @@ import re
 import sys
 from pathlib import Path
 
+# the app dir holds index.html; the scene files live in save/ next to it.
+SAVE_DIR = "save"
 DEFAULT_NAME = "default.js"
 DELETED_SUFFIX = ".delete-me"
 
@@ -41,7 +44,12 @@ DELETED_SUFFIX = ".delete-me"
 PRESET_TAG_RE = re.compile(
 	'^(\s*)<script\s+src="([^"]+)"\s+class="preset"\s*>\s*</script>\s*$')
 MARKER_RE = re.compile(r"^// preset: (\S+)$")
-DEFAULT_TAG = '<script src="%s"></script>' % DEFAULT_NAME
+DEFAULT_TAG = '<script src="%s/%s"></script>' % (SAVE_DIR, DEFAULT_NAME)
+
+
+def src_of(name):
+	"""The <script src> of a scene file: save/NAME.js."""
+	return "%s/%s" % (SAVE_DIR, name)
 
 
 def die(msg):
@@ -164,20 +172,23 @@ def main():
 	cwd = Path(".")
 	if not (cwd / "index.html").is_file():
 		die("no index.html in the working directory - run from the app dir")
+	scenes_dir = cwd / SAVE_DIR
+	if not scenes_dir.is_dir():
+		die("no %s/ directory next to index.html - run from the app dir" % SAVE_DIR)
 
 	html = (cwd / "index.html").read_text(encoding="utf-8")
 	lines = html.split("\n")
 
 	# candidate scene files (in name order; the tag order below follows it)
 	candidates = sorted(
-		p.name for p in cwd.iterdir()
+		p.name for p in scenes_dir.iterdir()
 		if p.is_file() and p.name.endswith(".js")
 		and p.name != DEFAULT_NAME and not p.name.endswith(DELETED_SUFFIX))
 	scenes = {}
 	texts = {}
 	skipped = []
 	for name in candidates:
-		text = read_text(cwd / name)
+		text = read_text(scenes_dir / name)
 		if text is None:
 			skipped.append(name + " (unreadable)")
 			continue
@@ -187,7 +198,7 @@ def main():
 			continue
 		scenes[name] = scene
 		texts[name] = text
-	json_files = sorted(p.name for p in cwd.iterdir() if p.suffix == ".json")
+	json_files = sorted(p.name for p in scenes_dir.iterdir() if p.suffix == ".json")
 
 	tag_lines = find_tag_lines(lines)
 	tag_by_src = {}
@@ -203,23 +214,25 @@ def main():
 	for name in sorted(scenes):
 		text = texts[name]
 		marker = read_marker(text)
-		if name in tag_by_src:
-			claimed.add(tag_by_src[name])
-			kept.add(tag_by_src[name])
+		src = src_of(name)
+		if src in tag_by_src:
+			claimed.add(tag_by_src[src])
+			kept.add(tag_by_src[src])
 			if needs_rewrite(text, name):
-				(cwd / name).write_text(preset_module(name, scenes[name]), encoding="utf-8")
+				(scenes_dir / name).write_text(preset_module(name, scenes[name]), encoding="utf-8")
 				rewritten.append(name)
 			continue
 		# the file was renamed after linking: its marker still names the tag.
 		# a marker can only move a tag that no file claimed by name.
-		if marker and marker in tag_by_src and tag_by_src[marker] not in claimed:
-			claimed.add(tag_by_src[marker])
-			renamed[tag_by_src[marker]] = name
-			(cwd / name).write_text(preset_module(name, scenes[name]), encoding="utf-8")
+		old_src = src_of(marker) if marker else None
+		if old_src and old_src in tag_by_src and tag_by_src[old_src] not in claimed:
+			claimed.add(tag_by_src[old_src])
+			renamed[tag_by_src[old_src]] = name
+			(scenes_dir / name).write_text(preset_module(name, scenes[name]), encoding="utf-8")
 			rewritten.append(name)
 			continue
 		new_names.append(name)
-		(cwd / name).write_text(preset_module(name, scenes[name]), encoding="utf-8")
+		(scenes_dir / name).write_text(preset_module(name, scenes[name]), encoding="utf-8")
 		rewritten.append(name)
 
 	for i, src in tag_lines:
@@ -227,7 +240,7 @@ def main():
 			removed.add(i)
 
 	if not kept and not renamed and not removed and not new_names:
-		print("index.html has no preset tags and no scene files to link - unchanged")
+		print("index.html has no preset tags and no scene files in %s/ to link - unchanged" % SAVE_DIR)
 		if skipped:
 			print("skipped: " + ", ".join(skipped))
 		return
@@ -247,7 +260,7 @@ def main():
 			continue
 		if i in renamed:
 			m = PRESET_TAG_RE.match(line)
-			line = m.group(1) + '<script src="%s" class="preset"></script>' % renamed[i]
+			line = m.group(1) + '<script src="%s" class="preset"></script>' % src_of(renamed[i])
 		out.append(line)
 		if i in kept or i in renamed:
 			last_preset = len(out) - 1
@@ -255,7 +268,7 @@ def main():
 		anchor = last_preset
 		if anchor is None:
 			anchor = out.index(next(l for l in out if DEFAULT_TAG in l))
-		block = ['\t<script src="%s" class="preset"></script>' % n for n in new_names]
+		block = ['\t<script src="%s" class="preset"></script>' % src_of(n) for n in new_names]
 		out[anchor + 1:anchor + 1] = block
 
 	new_html = "\n".join(out)
@@ -263,7 +276,7 @@ def main():
 		(cwd / "index.html").write_text(new_html, encoding="utf-8")
 
 	old_src_at = {i: src for i, src in tag_lines}
-	print("index.html preset tags (between default.js and js/main.js):")
+	print("index.html preset tags (between %s/%s and js/main.js):" % (SAVE_DIR, DEFAULT_NAME))
 	if new_names:
 		print("  added:   " + ", ".join(new_names))
 	if renamed:

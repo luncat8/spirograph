@@ -131,21 +131,31 @@
 		}
 	}
 
-	function checkboxRow(label, checked, onChange, key) {
-		var wrap = el('div', 'row');
-		var lab = el('label', null, label);
+	// checkbox markup shared by checkboxRow and colorCheckRow: the box comes
+	// FIRST and both it and the text sit inside the <label> (one click
+	// targets either; index.html lays .row label out as a single flex line).
+	function checkLabel(label, checked, onChange, key) {
+		var lab = el('label');
 		var inp = document.createElement('input');
 		inp.type = 'checkbox';
 		inp.checked = checked;
 		inp.addEventListener('change', function () { onChange(inp.checked); });
-		wrap.appendChild(lab);
-		wrap.appendChild(inp);
+		lab.appendChild(inp);
+		lab.appendChild(document.createTextNode(label));
 		if (key) checkboxRefs[key] = inp;
+		return lab;
+	}
+
+	function checkboxRow(label, checked, onChange, key) {
+		var wrap = el('div', 'row');
+		wrap.appendChild(checkLabel(label, checked, onChange, key));
 		return wrap;
 	}
 
 	function colorRow(label, value, onChange, key) {
-		var wrap = el('div', 'row');
+		// label + swatch on one line (the label is a flex container, so it
+		// would otherwise push the swatch to a second line).
+		var wrap = el('div', 'row inline');
 		var lab = el('label', null, label);
 		var inp = document.createElement('input');
 		inp.type = 'color';
@@ -218,10 +228,11 @@
 		for (var i = 0; i < presets.length; i++) names.push(presets[i].name);
 		presetHost.appendChild(presetRow(names, function (name) { app.loadPreset(name); }));
 		presetHost.appendChild(el('div', 'help',
-			'two preset workflows (run from the app dir): merge saved scenes into ' +
-			'default.js with presets_merge_to_default.js.py, or keep them as separate ' +
-			'files - link_presets_to_html.py inserts them into index.html, and ' +
-			'renaming or deleting a file + re-running updates the list.'));
+			'presets live in save/. two workflows, both run from the app dir: merge ' +
+			'the scene files into save/default.js with ' +
+			'presets_merge_to_default.js.py, or keep them as separate files - ' +
+			'link_presets_to_html.py links save/*.js into index.html, and renaming ' +
+			'or deleting a file + re-running updates the list.'));
 	}
 
 	// slider rows of the selected glass shader (one per param in its table).
@@ -242,18 +253,12 @@
 	}
 
 	function colorCheckRow(label, checkVal, colorVal, onCheck, onColor) {
-		var wrap = el('div', 'row');
-		var chk = document.createElement('input');
-		chk.type = 'checkbox';
-		chk.checked = checkVal;
-		chk.addEventListener('change', function () { onCheck(chk.checked); });
-		var lab = el('label', null, label);
+		var wrap = el('div', 'row inline');
+		wrap.appendChild(checkLabel(label, checkVal, onCheck));
 		var inp = document.createElement('input');
 		inp.type = 'color';
 		inp.value = colorVal;
 		inp.addEventListener('input', function () { onColor(inp.value); });
-		wrap.appendChild(chk);
-		wrap.appendChild(lab);
 		wrap.appendChild(inp);
 		return wrap;
 	}
@@ -400,12 +405,31 @@
 
 		// view toggles (independent checkboxes, combinable)
 		panel.appendChild(checkboxRow('circles', app.showCircles, function (v) { app.setShowCircles(v); }, 'showCircles'));
+		panel.appendChild(selectRow('circles hue', Settings.CIRCLE_HUE_IDS, function (id) {
+			return Settings.CIRCLE_HUES[id].label;
+		}, app.circleHue, function (v) { app.setCircleHue(v); }, 'circleHue'));
+		panel.appendChild(el('div', 'help',
+			'animates the colour of the circle outlines by the gear\'s distance ' +
+			'from its parent\'s centre, or by how fast that distance changes ' +
+			'(both move only when a gear has a 3D tilt speed).'));
 		panel.appendChild(checkboxRow('dial', app.showDial, function (v) { app.setShowDial(v); }, 'showDial'));
 		panel.appendChild(checkboxRow('draw trail', app.drawTrails, function (v) { app.setDrawTrails(v); }, 'drawTrails'));
 		panel.appendChild(checkboxRow('points', app.showPoints, function (v) { app.setShowPoints(v); }, 'showPoints'));
 		panel.appendChild(checkboxRow('glow points', app.glowPoints, function (v) { app.setGlow(v); }, 'glowPoints'));
+		panel.appendChild(checkboxRow('3D axis', app.showAxis, function (v) { app.setShowAxis(v); }, 'showAxis'));
 		panel.appendChild(el('div', 'help',
-			'Uncheck "draw trail" to hide the traced curve (points-only view).'));
+			'Uncheck "draw trail" to hide the traced curve (points-only view). ' +
+			'"3D axis" draws the world axes (X red, Y green, Z blue) in 3D only.'));
+
+		// full-screen background (ports of the glass-spheres-shader interiors).
+		panel.appendChild(el('div', 'sub', 'background'));
+		panel.appendChild(selectRow('background', Settings.BACKGROUND_IDS, function (id) {
+			return Settings.BACKGROUNDS[id].label;
+		}, app.background, function (v) { app.setBackground(v); }, 'background'));
+		panel.appendChild(el('div', 'help',
+			'analytic environments behind the figure: checker land, rainbow and ' +
+			'color box turn with the camera in 3D (ports of ' +
+			'luncat8/glass-spheres-shader); black is the plain canvas colour.'));
 
 		// glass sphere shells over the gear discs: a selector picks the ray
 		// tracer (render.js), the slider rows below it are rebuilt per shader
@@ -696,6 +720,9 @@
 		setShowDial: function (v) { if (checkboxRefs.showDial) checkboxRefs.showDial.checked = v; },
 		setShowPoints: function (v) { if (checkboxRefs.showPoints) checkboxRefs.showPoints.checked = v; },
 		setGlow: function (v) { if (checkboxRefs.glowPoints) checkboxRefs.glowPoints.checked = v; },
+		setShowAxis: function (v) { if (checkboxRefs.showAxis) checkboxRefs.showAxis.checked = v; },
+		setCircleHue: function (v) { if (selectRefs.circleHue) selectRefs.circleHue.value = v; },
+		setBackground: function (v) { if (selectRefs.background) selectRefs.background.value = v; },
 		setDrawTrails: function (v) { if (checkboxRefs.drawTrails) checkboxRefs.drawTrails.checked = v; },
 		setSphereShader: function (v) {
 			if (selectRefs.sphereShader) selectRefs.sphereShader.value = v;

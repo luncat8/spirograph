@@ -1,0 +1,26 @@
+1
+to easy distinguish and organise menu groups - make logical groups with stripe background, like stripe tables but each group.
+
+group1
+	pause clear reset
+
+group2
+	save related
+
+etc
+
+
+2
+under tree group after sliders add tree view of gears by levels to be possible easy select to open context menu. selecting on the canvas also highlight item in the tree
+
+3
+bug
+previous commit implemented
+
+'circles' color hue animation: 
+	off
+	distance gear from parent gear center
+	current gear speed related to parent gear center (change distance per dt)
+
+but it looks like colors are not updated but constant. this is because it calculate not distance gear center from parent gear center but wrongly count something like current gear size
+	

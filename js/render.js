@@ -121,6 +121,151 @@
 		gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 	}
 
+	// ---- background pass (full-screen analytic environment) ----------------
+	// the four "simple backgrounds" of luncat8/glass-spheres-shader ported as
+	// the canvas background (js/glsl_lib.js GLSL.env, themes 0-2): a
+	// direction-only environment, exactly like a cubemap, so 3D samples it
+	// through the orbit camera (it turns with the figure) and 2D through a
+	// fixed window direction (sky above the horizon, checker land below).
+	//   checker  : sky gradient + a checkered ground plane fading into haze
+	//   rainbow  : the hue rides the azimuth, soft blobs + bubble highlights
+	//   colorbox : fbm-hued colour all around the camera
+	// 'black' (the default) draws nothing: the clear colour is the background.
+	var BG_THEMES = { checker: 0, rainbow: 1, colorbox: 2 };
+	var BG_GAIN = 0.75;              // trails sit on top: keep the env a step back
+	var bgProg = null, bgVao = null, bgVbo = null, bgLoc = {};
+	var BG_VS = [
+		'#version 300 es',
+		'precision highp float;',
+		'layout(location = 0) in vec2 aQ;',
+		'void main(){ gl_Position = vec4(aQ, 0.0, 1.0); }'
+	].join('\n');
+	var BG_FS = [
+		'#version 300 es',
+		'precision highp float;',
+		'uniform vec2 uRes;',
+		'uniform vec2 uHalf;',          // half width / half height of the view window
+		'uniform vec3 uCamRt;',
+		'uniform vec3 uCamUp;',
+		'uniform vec3 uCamFw;',
+		'uniform float uTime;',
+		'uniform float uPersp;',        // 1 = orbit camera rays, 0 = flat 2D window
+		'uniform int uTheme;',
+		'out vec4 outColor;',
+		'#define PI 3.14159265359',
+		'float sat1(float x){ return clamp(x, 0.0, 1.0); }',
+		// smooth analytic 3D wobble in [-1,1]: no texture, no hash, no grain.
+		'float swirl(vec3 p){',
+		'  float a = sin(p.x * 1.7 + sin(p.z * 1.3) * 1.2);',
+		'  float b = cos(p.y * 1.9 - sin(p.x * 1.1) * 0.9);',
+		'  float c = sin(p.z * 1.4 + cos(p.y * 1.6) * 1.1);',
+		'  return (a * b + c) * 0.5;',
+		'}',
+		'vec3 hsv2rgb(vec3 c){',
+		'  vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);',
+		'  vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);',
+		'  return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);',
+		'}',
+		// sky gradient + a checkered ground plane at y = -3, fading into haze.
+		'vec3 envChecker(vec3 d){',
+		'  d = normalize(d);',
+		'  if (d.y < -0.02) {',
+		'    float t = -3.0 / d.y;',
+		'    vec2 q = d.xz * t;',
+		'    float chk = mod(floor(q.x * 0.35) + floor(q.y * 0.35), 2.0);',
+		'    vec3 floorCol = mix(vec3(0.06, 0.07, 0.09), vec3(0.80, 0.78, 0.74), chk);',
+		'    float fog = exp(-t * 0.022);',
+		'    return mix(vec3(0.58, 0.66, 0.78), floorCol, fog);',
+		'  }',
+		'  float h = sat1(d.y);',
+		'  vec3 sky = mix(vec3(0.70, 0.78, 0.90), vec3(0.10, 0.26, 0.60), pow(h, 0.6));',
+		'  sky += vec3(0.45, 0.28, 0.15) * pow(1.0 - h, 10.0) * 0.7;',
+		'  float cl = sat1(0.5 + 0.5 * swirl(d * 4.5 + vec3(0.0, 1.7, 0.0)));',
+		'  sky = mix(sky, vec3(0.92, 0.94, 0.98), cl * cl * 0.35 * sat1(d.y * 3.0));',
+		'  return sky;',
+		'}',
+		// the hue rides the azimuth, with soft cellular blobs on top.
+		'vec3 envRainbow(vec3 d){',
+		'  d = normalize(d);',
+		'  float hue = fract(atan(d.z, d.x) / (2.0 * PI) + 0.5 * d.y + uTime * 0.02);',
+		'  vec3 col = hsv2rgb(vec3(hue, 0.60, 0.50 + 0.30 * sat1(d.y)));',
+		'  float c1 = 0.5 + 0.5 * swirl(d * 3.0 + vec3(0.0, uTime * 0.04, 1.7));',
+		'  float c2 = 0.5 + 0.5 * swirl(d * 6.5 - vec3(uTime * 0.03, 0.8, 0.0));',
+		'  vec3 top = 0.5 + 0.5 * cos(2.0 * PI * (hue + vec3(0.0, 0.33, 0.67)));',
+		'  col = mix(col, top * 1.25, 0.30 * c1);',
+		'  col += vec3(1.0) * pow(c2, 6.0) * 0.12;',
+		'  return col;',
+		'}',
+		// fbm-hued colour all around the camera.
+		'vec3 envColorBox(vec3 d){',
+		'  d = normalize(d);',
+		'  vec3 p = d * 2.4 + vec3(uTime * 0.05, uTime * 0.03, 0.0);',
+		'  float n = swirl(p * 1.6)',
+		'    + 0.5 * swirl(p * 3.1 + vec3(4.7, 2.9, 1.3))',
+		'    + 0.25 * swirl(p * 6.3 - vec3(1.9, 5.1, 3.7));',
+		'  n = n * 0.57 + 0.5;',
+		'  vec3 col = hsv2rgb(vec3(fract(n * 1.4), 0.85, 0.92));',
+		'  col *= 0.80 + 0.20 * sat1(d.y * 0.5 + 0.5);',
+		'  return col;',
+		'}',
+		'vec3 env(vec3 d){',
+		'  if (uTheme == 2) return envColorBox(d);',
+		'  if (uTheme == 1) return envRainbow(d);',
+		'  return envChecker(d);',
+		'}',
+		'void main(){',
+		'  vec2 ndc = (gl_FragCoord.xy / uRes) * 2.0 - 1.0;',
+		'  vec3 d = uPersp > 0.5',
+		'    ? normalize(uCamFw + uCamRt * (ndc.x * uHalf.x) + uCamUp * (ndc.y * uHalf.y))',
+		// 2D: the canvas is a window looking down +z, so the horizon of the
+		// checker land sits mid-canvas and the figure floats in front of the sky.
+		'    : normalize(vec3(ndc.x * uHalf.x, ndc.y * uHalf.y, 1.0));',
+		'  vec3 col = env(d) * ' + BG_GAIN.toFixed(2) + ';',
+		'  outColor = vec4(clamp(col, 0.0, 1.0), 1.0);',
+		'}'
+	].join('\n');
+	var BG_UNIFORMS = ['uRes', 'uHalf', 'uCamRt', 'uCamUp', 'uCamFw', 'uTime', 'uPersp', 'uTheme'];
+
+	function bgInit() {
+		bgProg = gl.createProgram();
+		gl.attachShader(bgProg, compile(gl.VERTEX_SHADER, BG_VS));
+		gl.attachShader(bgProg, compile(gl.FRAGMENT_SHADER, BG_FS));
+		gl.linkProgram(bgProg);
+		if (!gl.getProgramParameter(bgProg, gl.LINK_STATUS)) {
+			throw new Error('background link: ' + gl.getProgramInfoLog(bgProg));
+		}
+		for (var i = 0; i < BG_UNIFORMS.length; i++) bgLoc[BG_UNIFORMS[i]] = gl.getUniformLocation(bgProg, BG_UNIFORMS[i]);
+		bgVao = gl.createVertexArray();
+		bgVbo = gl.createBuffer();
+		gl.bindVertexArray(bgVao);
+		gl.bindBuffer(gl.ARRAY_BUFFER, bgVbo);
+		gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+		gl.enableVertexAttribArray(0);
+		gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 8, 0);
+		gl.bindVertexArray(null);
+	}
+
+	// p: { theme (Settings.BACKGROUND_IDS), camRt, camUp, camFw, half ([w,h]),
+	//      persp (0/1), time }. 'black' / unknown theme draws nothing.
+	function bgDraw(p) {
+		var theme = BG_THEMES[p.theme];
+		if (theme == null) return;
+		gl.disable(gl.DEPTH_TEST);
+		gl.depthMask(false);
+		gl.useProgram(bgProg);
+		gl.uniform2f(bgLoc.uRes, W, H);
+		gl.uniform2f(bgLoc.uHalf, p.half[0], p.half[1]);
+		gl.uniform3f(bgLoc.uCamRt, p.camRt[0], p.camRt[1], p.camRt[2]);
+		gl.uniform3f(bgLoc.uCamUp, p.camUp[0], p.camUp[1], p.camUp[2]);
+		gl.uniform3f(bgLoc.uCamFw, p.camFw[0], p.camFw[1], p.camFw[2]);
+		gl.uniform1f(bgLoc.uTime, p.time);
+		gl.uniform1f(bgLoc.uPersp, p.persp);
+		gl.uniform1i(bgLoc.uTheme, theme);
+		gl.bindVertexArray(bgVao);
+		gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+		gl.bindVertexArray(null);
+	}
+
 	// ---- glass sphere pass (full-screen analytic ray trace) ----------------
 	// one full-screen quad; the fragment shader casts a camera ray per pixel
 	// through the gear spheres (world-space vec4 centre+radius uniform array,
@@ -667,6 +812,7 @@
 		gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 		overlayInit(W, H);
 		glowInit();
+		bgInit();
 		sphInit();
 	}
 
@@ -892,6 +1038,7 @@
 		glowBegin: glowBegin,
 		glowPoint: glowPoint,
 		glowFlush: glowFlush,
+		bgDraw: bgDraw,
 		sphReset: sphReset,
 		sphPush: sphPush,
 		sphGrab: sphGrab,

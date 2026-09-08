@@ -31,6 +31,10 @@
 	#panel.ptitle, .ptitle { font-weight: 600; margin-bottom: 8px; color: #fff; }
 	.row label { display: flex; align-items: center; gap: 6px; color: #9fb0c8; }
 	.row input[type=range] { flex: 1; min-width: 0; }
+	/* checkbox rows: box first, then the label, on one line */
+	.row input[type=checkbox] { flex: 0 0 auto; margin: 0; cursor: pointer; accent-color: #5a7fd0; }
+	.row.inline { display: flex; align-items: center; gap: 6px; }
+	.row.inline label { flex: 1 1 auto; min-width: 0; }
 	.row select { flex: 1; min-width: 0; padding: 3px 6px; background: #1d2940; color: #dce6f7;
 		border: 1px solid #2e3d59; border-radius: 7px; font: inherit; }
 	.row .val { flex: 0 0 40px; text-align: right; color: #e8eefc; font-variant-numeric: tabular-nums; }
@@ -79,17 +83,19 @@
 	<script src="js/render.js"></script>
 	<script src="js/camera3.js"></script>
 	<script src="js/gui.js"></script>
-	<!-- startup scene + preset list: default.js sets SETTINGS (the scene that
-	     loads whenever there is no autosave) and PRESETS (the panel's preset
-	     dropdown). two ways to collect presets (run the script from this dir):
-	     1. single file: presets_merge_to_default.js.py - the scene files saved
-	        next to index.html are merged into default.js and the consumed
-	        files are renamed *.delete-me.
-	     2. multi file: link_presets_to_html.py - the scene files stay where
-	        they are and are inserted below (between default.js and js/main.js)
-	        as <script ... class="preset"> tags. those tags are managed by the
-	        script: renaming or deleting a file and re-running moves or drops
-	        its tag. do not edit the class="preset" tags by hand. -->
+	<!-- startup scene + preset list: save/default.js sets SETTINGS (the scene
+	     that loads whenever there is no autosave) and PRESETS (the panel's
+	     preset dropdown). every scene file lives in save/. two ways to collect
+	     presets (run the script from this dir):
+	     1. single file: save/presets_merge_to_default.js.py - the scene files
+	        in save/ are merged into save/default.js and the consumed files are
+	        renamed *.delete-me.
+	     2. multi file: save/link_presets_to_html.py - the scene files stay in
+	        save/ and are inserted below (between save/default.js and
+	        js/main.js) as <script ... class="preset"> tags. those tags are
+	        managed by the script: renaming or deleting a file and re-running
+	        moves or drops its tag. do not edit the class="preset" tags by
+	        hand. -->
 	<script src="save/default.js"></script>
 	<script src="save/3d-whole-spheres.js" class="preset"></script>
 	<script src="save/3d-tails-whole-rainbow2.js" class="preset"></script>

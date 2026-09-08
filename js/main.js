@@ -46,12 +46,15 @@
 		showDial: false,
 		showPoints: false,
 		glowPoints: false,
+		showAxis: false,
 		drawTrails: false,
 		autoYaw: 0,            // 3D auto-camera speeds (rad/s; schema-seeded)
 		autoPitch: 0,
 		sphereShader: 'off',
 		sphereColor: '#9fd8ff',
-		sphereParams: Settings.sphereDefaults()   // per-shader slider bags
+		sphereParams: Settings.sphereDefaults(),  // per-shader slider bags
+		background: 'black',   // full-screen background (Settings.BACKGROUNDS)
+		circleHue: 'off'       // guide-circle hue source (Settings.CIRCLE_HUES)
 	};
 
 	var TAU = Math.PI * 2;
@@ -595,6 +598,19 @@
 	App.setShowDial = function (v) { App.showDial = v; markDirty(); };
 	App.setShowPoints = function (v) { App.showPoints = v; markDirty(); };
 	App.setGlow = function (v) { App.glowPoints = v; markDirty(); };
+	// 3D world axes at the root (view-only, drawn live).
+	App.setShowAxis = function (v) { App.showAxis = v; markDirty(); };
+	// full-screen background (Settings.BACKGROUNDS); drawn live, no re-bake.
+	App.setBackground = function (v) {
+		if (!Settings.BACKGROUNDS[v]) return;
+		App.background = v; markDirty();
+	};
+	// guide-circle hue source (Settings.CIRCLE_HUES). the hue is computed per
+	// frame from the live gear positions, so switching it only needs a repaint.
+	App.setCircleHue = function (v) {
+		if (!Settings.CIRCLE_HUES[v]) return;
+		App.circleHue = v; markDirty();
+	};
 	// glass sphere shells (view-only; drawn live each render, no overlay bake).
 	// sphereShader selects the ray tracer ('off' | 'hollow' | 'layers');
 	// each shader keeps its own slider bag in App.sphereParams[shader].
@@ -1702,16 +1718,77 @@
 		return { budget: gestureSegBudget(), segs: lastTrailSegs, drawn: lastTrailDrawn };
 	};
 
+	// ---- guide-circle hue animation ---------------------------------------
+	// App.circleHue picks what drives the colour of the `circles` outlines:
+	//   off      - the static guide colour
+	//   distance - the gear's distance from its parent gear's centre
+	//   speed    - how fast that distance changes (d distance / dt)
+	// both sources are refreshed once per render; a root gear has no parent,
+	// so its distance and rate are 0 - the base hue of the wheel. in flat 2D a
+	// child keeps a constant distance (the gears stay tangent), so 'distance'
+	// reads as a per-level rainbow and 'speed' settles on the base hue; with a
+	// 3D tilt (speed2) the mounting distance really changes and both animate.
+	var HUE_DIST_TURNS = 1.6;      // hue cycles per world unit of distance
+	var HUE_RATE_TURNS = 0.5;      // hue cycles per (world unit / second)
+	var HUE_SAT = 0.8;
+	var hueRgb = [0, 0, 0];        // shared scratch (no per-frame allocation)
+	var frameDt = 0;               // dt of the frame being rendered
+
+	function gearParentDist(g, is3) {
+		var p = g.parent;
+		if (!p) return 0;
+		if (!is3) return Math.hypot(g.cx - p.cx, g.cy - p.cy);
+		var dx = g.c3[0] - p.c3[0], dy = g.c3[1] - p.c3[1], dz = g.c3[2] - p.c3[2];
+		return Math.sqrt(dx * dx + dy * dy + dz * dz);
+	}
+
+	// refresh every gear's distance from its parent's centre plus that
+	// distance's smoothed rate of change (a raw per-frame difference is far
+	// too noisy to read as a colour).
+	function updateGuideHue(is3) {
+		if (App.circleHue === 'off') return;
+		var smooth = Math.min(1, frameDt * 8);       // ~125 ms of smoothing
+		for (var i = 0; i < App.allGears.length; i++) {
+			var g = App.allGears[i];
+			var d = gearParentDist(g, is3);
+			if (frameDt > 0) g.distRate += ((d - g.distPrev) / frameDt - g.distRate) * smooth;
+			g.distPrev = d;
+		}
+	}
+
+	// outline colour of one gear: null when the hue animation is off (the
+	// caller keeps its static colour), else the shared hueRgb scratch.
+	function circleColor(g) {
+		if (App.circleHue === 'off') return null;
+		var v = App.circleHue === 'distance' ? g.distPrev * HUE_DIST_TURNS : g.distRate * HUE_RATE_TURNS;
+		var h = v - Math.floor(v);
+		var i = Math.floor(h * 6), f = h * 6 - i;
+		var p = 1 - HUE_SAT, q = 1 - HUE_SAT * f, t = 1 - HUE_SAT * (1 - f);
+		switch (i % 6) {
+			case 0: hueRgb[0] = 1; hueRgb[1] = t; hueRgb[2] = p; break;
+			case 1: hueRgb[0] = q; hueRgb[1] = 1; hueRgb[2] = p; break;
+			case 2: hueRgb[0] = p; hueRgb[1] = 1; hueRgb[2] = t; break;
+			case 3: hueRgb[0] = p; hueRgb[1] = q; hueRgb[2] = 1; break;
+			case 4: hueRgb[0] = t; hueRgb[1] = p; hueRgb[2] = 1; break;
+			default: hueRgb[0] = 1; hueRgb[1] = p; hueRgb[2] = q; break;
+		}
+		return hueRgb;
+	}
+
 	// gear skeleton: draws circles and/or dial hands depending on the
 	// independent toggles. Both may be on at once.
 	function drawGearOverlay() {
+		updateGuideHue(false);
 		for (var j = 0; j < App.allGears.length; j++) {
 			var gg = App.allGears[j];
 			var sc = w2s(gg.cx, gg.cy);
 			if (App.showCircles) {
 				var rad = Math.max(gg.r * App.S, 1.5 * App.dpr);
-				R.circle(sc.x, sc.y, rad, 1.2 * App.dpr, 0.45, 0.55, 0.72, 0.5, 64);
-				R.circle(sc.x, sc.y, 3 * App.dpr, 1.2 * App.dpr, 0.9, 0.95, 1.0, 0.95, 16);
+				var hue = circleColor(gg);
+				var cr = hue ? hue[0] : 0.45, cg = hue ? hue[1] : 0.55, cb = hue ? hue[2] : 0.72;
+				R.circle(sc.x, sc.y, rad, 1.2 * App.dpr, cr, cg, cb, hue ? 0.85 : 0.5, 64);
+				R.circle(sc.x, sc.y, 3 * App.dpr, 1.2 * App.dpr,
+					hue ? cr : 0.9, hue ? cg : 0.95, hue ? cb : 1.0, 0.95, 16);
 			}
 			if (App.showDial) {
 				// clock-hand skeleton anchored to the REAL gear centres so it
@@ -1887,25 +1964,31 @@
 	// outlines only (no fill/shade) for a clean drawing. depth OFF so guides
 	// stay readable. a sphere outline is a screen circle, so R.circle is exact.
 	function drawSkeleton3D() {
-		// faint world axes at the root (X red, Y green, Z blue). read the
-		// projected scalars immediately - w2s3D returns a shared scratch.
-		var ax0, ay0;
-		w2s3DC(0, 0, 0); ax0 = w2sScratchC.x; ay0 = w2sScratchC.y;
-		var p;
-		p = w2s3D(0.4, 0, 0);
-		Rseg(ax0, ay0, p.x, p.y, 1 * App.dpr, 0.5, 0.2, 0.25, 0.5, 0.2, 0.25, 0.6);
-		p = w2s3D(0, 0.4, 0);
-		Rseg(ax0, ay0, p.x, p.y, 1 * App.dpr, 0.2, 0.5, 0.25, 0.2, 0.5, 0.25, 0.6);
-		p = w2s3D(0, 0, 0.4);
-		Rseg(ax0, ay0, p.x, p.y, 1 * App.dpr, 0.25, 0.35, 0.6, 0.25, 0.35, 0.6, 0.6);
+		// faint world axes at the root (X red, Y green, Z blue), toggleable.
+		// read the projected scalars immediately - w2s3D returns a shared
+		// scratch.
+		if (App.showAxis) {
+			var ax0, ay0;
+			w2s3DC(0, 0, 0); ax0 = w2sScratchC.x; ay0 = w2sScratchC.y;
+			var p;
+			p = w2s3D(0.4, 0, 0);
+			Rseg(ax0, ay0, p.x, p.y, 1 * App.dpr, 0.5, 0.2, 0.25, 0.5, 0.2, 0.25, 0.6);
+			p = w2s3D(0, 0.4, 0);
+			Rseg(ax0, ay0, p.x, p.y, 1 * App.dpr, 0.2, 0.5, 0.25, 0.2, 0.5, 0.25, 0.6);
+			p = w2s3D(0, 0, 0.4);
+			Rseg(ax0, ay0, p.x, p.y, 1 * App.dpr, 0.25, 0.35, 0.6, 0.25, 0.35, 0.6, 0.6);
+		}
+		updateGuideHue(true);
 		for (var j = 0; j < App.allGears.length; j++) {
 			var gg = App.allGears[j];
 			var sm = sphereScreenRadius(gg);
 			var ctr = sm.c;
 			if (App.showCircles) {
 				var rad = Math.max(sm.rad, 2 * App.dpr);
-				R.circle(ctr.x, ctr.y, rad, 1.2 * App.dpr, 0.45, 0.55, 0.72, 0.5, 48);
-				Rdot(ctr.x, ctr.y, 2 * App.dpr, 0.9, 0.95, 1.0, 0.9);
+				var hue = circleColor(gg);
+				var cr = hue ? hue[0] : 0.45, cg = hue ? hue[1] : 0.55, cb = hue ? hue[2] : 0.72;
+				R.circle(ctr.x, ctr.y, rad, 1.2 * App.dpr, cr, cg, cb, hue ? 0.85 : 0.5, 48);
+				Rdot(ctr.x, ctr.y, 2 * App.dpr, hue ? cr : 0.9, hue ? cg : 0.95, hue ? cb : 1.0, 0.9);
 			}
 			if (App.showDial) {
 				var col = gg.parent ? [0.5, 0.55, 0.62] : [0.6, 0.66, 0.74];
@@ -2049,6 +2132,74 @@
 		sphTint[2] = parseInt(sphTintParsed.substr(5, 2), 16) / 255;
 	}
 
+	// camera basis shared by the full-screen passes (background, glass
+	// shells): the 3D orbit camera, or the 2D orthographic window that matches
+	// the current pan/zoom so the shells sit exactly on the circles. fills
+	// sphCam + the focal / ortho / bgDist uniforms in place (no allocation).
+	function passCamera(is3) {
+		var P = sphCam.camPos, bx = sphCam.camRt, by = sphCam.camUp, bf = sphCam.camFw;
+		if (!is3) {
+			// 2D: the flat figure lies in the world XY plane (z = 0), viewed
+			// straight down by an orthographic camera whose window is exactly
+			// the canvas view (pan + zoom).
+			P[0] = -App.view.pan[0]; P[1] = -App.view.pan[1]; P[2] = 4;
+			bx[0] = 1; bx[1] = 0; bx[2] = 0;
+			by[0] = 0; by[1] = 1; by[2] = 0;
+			bf[0] = 0; bf[1] = 0; bf[2] = -1;
+			sphUniforms.focal = 1;
+			sphUniforms.ortho = App.cx0 / App.S;   // world half-width of the view
+			sphUniforms.bgDist = 4;
+			return;
+		}
+		var eye = Camera3.eyeOf(App.cam, sphEye);
+		var t = App.cam.target;
+		var fx = t[0] - eye[0], fy = t[1] - eye[1], fz = t[2] - eye[2];
+		var fl = Math.hypot(fx, fy, fz) || 1; fx /= fl; fy /= fl; fz /= fl;
+		// camera basis in world (same construction as mat4LookAt):
+		// right = normalize(f x worldUp), up = right x f.
+		var rx = fy, ry = -fx, rr = Math.hypot(rx, ry) || 1; rx /= rr; ry /= rr;
+		P[0] = eye[0]; P[1] = eye[1]; P[2] = eye[2];
+		bx[0] = rx; bx[1] = ry; bx[2] = 0;
+		by[0] = ry * fz; by[1] = -rx * fz; by[2] = rx * fy - ry * fx;
+		bf[0] = fx; bf[1] = fy; bf[2] = fz;
+		sphUniforms.focal = 1 / Math.tan(Camera3.FOVY / 2);
+		sphUniforms.ortho = 0;
+		sphUniforms.bgDist = App.cam.dist;
+	}
+
+	// background pass uniforms (preallocated; the arrays alias sphCam so one
+	// passCamera call feeds both passes).
+	var BG_2D_HALF = 0.7;               // tangent of the 2D window half-angle
+	var bgUniforms = {
+		theme: 'black',
+		camRt: sphCam.camRt, camUp: sphCam.camUp, camFw: sphCam.camFw,
+		half: [1, 1], persp: 0, time: 0
+	};
+
+	// the environment is direction-only, so 3D samples it through the orbit
+	// camera (it turns with the figure) while 2D uses a fixed window direction
+	// - the 2D camera rays are parallel (orthographic) and would flatten any
+	// environment to a single colour. the canvas is square, so one half-angle
+	// covers both axes.
+	function drawBackground(is3) {
+		var half = is3 ? Math.tan(Camera3.FOVY / 2) : BG_2D_HALF;
+		bgUniforms.theme = App.background;
+		bgUniforms.half[0] = half;
+		bgUniforms.half[1] = half;
+		bgUniforms.persp = is3 ? 1 : 0;
+		bgUniforms.time = App.time;
+		R.bgDraw(bgUniforms);
+	}
+
+	// sort key of a sphere for the glass pass: its projected on-screen radius
+	// (world radius over camera depth) in 3D, the world radius in flat 2D.
+	function sphereScreenKey(g, is3) {
+		if (!is3) return g.r;
+		var f = sphCam.camFw, e = sphCam.camPos;
+		var dz = f[0] * (g.c3[0] - e[0]) + f[1] * (g.c3[1] - e[1]) + f[2] * (g.c3[2] - e[2]);
+		return g.r / Math.max(Math.abs(dz), 1e-3);
+	}
+
 	// the largest on-screen spheres go first: the shaders read a bounded
 	// prefix of the array (32 / 61), so when a tree exceeds it the ones that
 	// vanish are the sub-pixel leaves, never the root.
@@ -2056,55 +2207,15 @@
 		R.sphReset();
 		sphValid = 0;
 		parseSphTint();
-		var P = sphCam.camPos, bx = sphCam.camRt, by = sphCam.camUp, bf = sphCam.camFw;
 		var n = Math.min(App.allGears.length, MAX_GEARS);
-		var i, g;
-		if (is3) {
-			var eye = Camera3.eyeOf(App.cam, sphEye);
-			var t = App.cam.target;
-			var fx = t[0] - eye[0], fy = t[1] - eye[1], fz = t[2] - eye[2];
-			var fl = Math.hypot(fx, fy, fz) || 1; fx /= fl; fy /= fl; fz /= fl;
-			// camera basis in world (same construction as mat4LookAt):
-			// right = normalize(f x worldUp), up = right x f.
-			var rx = fy, ry = -fx, rr = Math.hypot(rx, ry) || 1; rx /= rr; ry /= rr;
-			var ux = ry * fz, uy = -rx * fz, uz = rx * fy - ry * fx;
-			P[0] = eye[0]; P[1] = eye[1]; P[2] = eye[2];
-			bx[0] = rx; bx[1] = ry; bx[2] = 0;
-			by[0] = ux; by[1] = uy; by[2] = uz;
-			bf[0] = fx; bf[1] = fy; bf[2] = fz;
-			sphUniforms.focal = 1 / Math.tan(Camera3.FOVY / 2);
-			sphUniforms.ortho = 0;
-			sphUniforms.bgDist = App.cam.dist;
-			for (i = 0; i < n; i++) {
-				g = App.allGears[i];
-				sphOrder[i] = i;
-				var dz = fx * (g.c3[0] - eye[0]) + fy * (g.c3[1] - eye[1]) + fz * (g.c3[2] - eye[2]);
-				sphKeys[i] = g.r / Math.max(Math.abs(dz), 1e-3);
-			}
-		} else {
-			// 2D: the flat figure lies in the world XY plane (z = 0), viewed
-			// straight down by an orthographic camera whose window is exactly
-			// the canvas view (pan + zoom), so the shells sit on the circles.
-			var panX = App.view.pan[0], panY = App.view.pan[1];
-			var halfW = App.cx0 / App.S;      // world half-width of the view
-			P[0] = -panX; P[1] = -panY; P[2] = 4;
-			bx[0] = 1; bx[1] = 0; bx[2] = 0;
-			by[0] = 0; by[1] = 1; by[2] = 0;
-			bf[0] = 0; bf[1] = 0; bf[2] = -1;
-			sphUniforms.focal = 1;
-			sphUniforms.ortho = halfW;
-			sphUniforms.bgDist = 4;
-			for (i = 0; i < n; i++) {
-				g = App.allGears[i];
-				sphOrder[i] = i;
-				sphKeys[i] = g.r;
-			}
+		for (var i = 0; i < n; i++) {
+			sphOrder[i] = i;
+			sphKeys[i] = sphereScreenKey(App.allGears[i], is3);
 		}
 		sphOrder.length = n;
 		sphOrder.sort(sphCmp);
-		for (i = 0; i < n; i++) {
-			var gi = sphOrder[i];
-			g = App.allGears[gi];
+		for (var j = 0; j < n; j++) {
+			var g = App.allGears[sphOrder[j]];
 			if (is3) R.sphPush(g.c3[0], g.c3[1], g.c3[2], g.r);
 			else R.sphPush(g.cx, g.cy, 0, g.r);
 			sphValid++;
@@ -2257,6 +2368,13 @@
 		else bakeOverlay(reset);
 	}
 
+	// one place opens a frame: clear, then the background pass (which is a
+	// no-op while the background is 'black').
+	function beginScreen(is3) {
+		R.begin(BG);
+		drawBackground(is3);
+	}
+
 	function renderScene() {
 		var is3 = App.dim === '3d';
 		if (is3) {
@@ -2267,16 +2385,18 @@
 			// do not chase the moving gear here or the baked trail desyncs.
 			Camera3.viewProj(matM, App.cam, App.size * App.dpr, App.size * App.dpr);
 		}
+		// both full-screen passes (background, glass) read the same camera.
 		var sphereOn = App.sphereShader !== 'off';
+		if (sphereOn || App.background !== 'black') passCamera(is3);
 		if (sphereOn) collectSpheres(is3);
 		if (!App.drawTrails) {                 // trail hidden: skeleton + points only
-			R.begin(BG);
+			beginScreen(is3);
 			drawSpherePass();
 			drawGuides(is3);
 			return;
 		}
 		if (isGestureActive()) {               // gesture: direct draw at the live view
-			R.begin(BG);
+			beginScreen(is3);
 			drawTrailsDirect(is3, gestureSegBudget());
 			drawSpherePass();
 			drawGuides(is3);
@@ -2294,7 +2414,7 @@
 				bakeTrails(is3, false);
 			}
 			R.overlay.unbind();
-			R.begin(BG);
+			beginScreen(is3);
 			R.overlay.blitToScreen();
 			drawTrailTips(is3);
 			if (sphereOn) Rflush();            // tips must be pixels before the grab
@@ -2302,7 +2422,7 @@
 			drawGuides(is3);
 			return;
 		}
-		R.begin(BG);                           // redraw mode: full trail every render
+		beginScreen(is3);                      // redraw mode: full trail every render
 		drawTrailsDirect(is3, 0);
 		drawSpherePass();
 		drawGuides(is3);
@@ -2311,6 +2431,7 @@
 	function frame(now) {
 		var dt = last ? Math.min(0.05, (now - last) / 1000) : 0;
 		last = now;
+		frameDt = dt;   // the guide-circle hue rate is a per-frame difference
 		// background whole-mode bake: a time-sliced chunk per frame. it runs
 		// even while paused (it is a computation, not an animation) and paints
 		// progressively, so the UI never blocks on a long period.

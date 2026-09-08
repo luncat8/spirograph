@@ -1241,7 +1241,7 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 
 // ---- 0.7.5: shipped default.js shape ----------------------------------
 (function shippedDefaultFile() {
-	var dj = require('../default.js');
+	var dj = require('../save/default.js');
 	ok(dj.SETTINGS && dj.SETTINGS.gears && dj.SETTINGS.gears.length > 0, 'shipped default.js exports its startup scene');
 	ok(Array.isArray(dj.PRESETS), 'shipped default.js exports a preset list');
 	var good = true, names = [];
@@ -1327,13 +1327,14 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 			'\telse root.SETTINGS = S;\n' +
 			'})(typeof window !== \'undefined\' ? window : globalThis);\n';
 	}
+	// the scripts work on the save/ folder next to index.html
 	function runCombine(dir) {
-		cp.execSync(py + ' ' + JSON.stringify(p.join(__dirname, '..', 'presets_merge_to_default.js.py')), { cwd: dir, stdio: 'pipe' });
+		cp.execSync(py + ' ' + JSON.stringify(p.join(__dirname, '..', 'save', 'presets_merge_to_default.js.py')), { cwd: dir, stdio: 'pipe' });
 	}
 	function loadDefault(dir) {
 		var ctx = {};
 		vm.createContext(ctx);
-		vm.runInContext(fs.readFileSync(p.join(dir, 'default.js'), 'utf8'), ctx, { filename: 'default.js' });
+		vm.runInContext(fs.readFileSync(p.join(dir, 'save', 'default.js'), 'utf8'), ctx, { filename: 'default.js' });
 		return ctx;
 	}
 	var sA = Gear.serialize(Gear.defaultScene(), { zoom: 2, pan: [0, 0] }, 1, 'frequency');
@@ -1341,40 +1342,54 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	sB.dim = '3d';
 	var dir = fs.mkdtempSync(p.join(os.tmpdir(), 'spiro-presets-'));
 	try {
+		fs.mkdirSync(p.join(dir, 'save'));
 		var base = Gear.serialize(Gear.defaultScene(), { zoom: 1, pan: [0, 0] }, 1, 'frequency');
-		fs.writeFileSync(p.join(dir, 'default.js'), moduleJs(base));
-		fs.writeFileSync(p.join(dir, '2d-25-01-01-10-00-00.js'), moduleJs(sA));
-		fs.writeFileSync(p.join(dir, '3d-tails-whole-25-01-01-11-00-00.js'), moduleJs(sB));
-		fs.writeFileSync(p.join(dir, 'plain.json'), JSON.stringify(sA));
-		fs.writeFileSync(p.join(dir, 'not-a-scene.js'), 'console.log("not a scene");\n');
+		fs.writeFileSync(p.join(dir, 'save', 'default.js'), moduleJs(base));
+		fs.writeFileSync(p.join(dir, 'save', '2d-25-01-01-10-00-00.js'), moduleJs(sA));
+		fs.writeFileSync(p.join(dir, 'save', '3d-tails-whole-25-01-01-11-00-00.js'), moduleJs(sB));
+		fs.writeFileSync(p.join(dir, 'save', 'plain.json'), JSON.stringify(sA));
+		fs.writeFileSync(p.join(dir, 'save', 'not-a-scene.js'), 'console.log("not a scene");\n');
+		fs.writeFileSync(p.join(dir, 'outside.js'), moduleJs(sA));   // not in save/: ignored
 		runCombine(dir);
 		var ctx = loadDefault(dir);
 		ok(ctx.SETTINGS && ctx.SETTINGS.view.zoom === 1, 'combiner preserves the startup scene');
-		ok(Array.isArray(ctx.PRESETS) && ctx.PRESETS.length === 3, 'every scene file became a preset',
+		ok(Array.isArray(ctx.PRESETS) && ctx.PRESETS.length === 3, 'every scene file in save/ became a preset',
 			ctx.PRESETS && ctx.PRESETS.length);
 		var names = ctx.PRESETS.map(function (x) { return x.name; });
 		ok(names.join(',') === '2d-25-01-01-10-00-00,3d-tails-whole-25-01-01-11-00-00,plain',
 			'preset names come from the file names', names.join(','));
 		ok(ctx.PRESETS[0].scene.view.zoom === 2 && ctx.PRESETS[1].scene.dim === '3d' && ctx.PRESETS[2].scene.view.zoom === 2,
 			'preset scenes keep their content');
-		ok(fs.existsSync(p.join(dir, '2d-25-01-01-10-00-00.js.delete-me')) &&
-			fs.existsSync(p.join(dir, 'plain.json.delete-me')), 'combined files are renamed *.delete-me');
-		ok(fs.existsSync(p.join(dir, 'not-a-scene.js')), 'non-scene files are left alone');
-		var gen = fs.readFileSync(p.join(dir, 'default.js'), 'utf8');
+		ok(fs.existsSync(p.join(dir, 'save', '2d-25-01-01-10-00-00.js.delete-me')) &&
+			fs.existsSync(p.join(dir, 'save', 'plain.json.delete-me')), 'combined files are renamed *.delete-me');
+		ok(fs.existsSync(p.join(dir, 'save', 'not-a-scene.js')), 'non-scene files are left alone');
+		ok(fs.existsSync(p.join(dir, 'outside.js')), 'scene files outside save/ are ignored');
+		var gen = fs.readFileSync(p.join(dir, 'save', 'default.js'), 'utf8');
 		runCombine(dir);
-		ok(fs.readFileSync(p.join(dir, 'default.js'), 'utf8') === gen, 'a second run changes nothing (rename = done marker)');
+		ok(fs.readFileSync(p.join(dir, 'save', 'default.js'), 'utf8') === gen, 'a second run changes nothing (rename = done marker)');
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}
 	var dir2 = fs.mkdtempSync(p.join(os.tmpdir(), 'spiro-presets-'));
 	try {
-		fs.writeFileSync(p.join(dir2, '2d-25-01-01-00-00-00.js'), moduleJs(sA));
+		fs.mkdirSync(p.join(dir2, 'save'));
+		fs.writeFileSync(p.join(dir2, 'save', '2d-25-01-01-00-00-00.js'), moduleJs(sA));
 		runCombine(dir2);
 		var ctx2 = loadDefault(dir2);
 		ok(ctx2.SETTINGS === null && ctx2.PRESETS.length === 1,
-			'missing default.js is created (no startup scene, presets kept)');
+			'missing save/default.js is created (no startup scene, presets kept)');
 	} finally {
 		fs.rmSync(dir2, { recursive: true, force: true });
+	}
+	// no save/ folder: the script says so instead of writing anywhere
+	var dir3 = fs.mkdtempSync(p.join(os.tmpdir(), 'spiro-presets-'));
+	try {
+		var threw = false;
+		try { runCombine(dir3); } catch (e) { threw = true; }
+		ok(threw && !fs.existsSync(p.join(dir3, 'default.js')),
+			'no save/ folder: the script fails without writing a default.js');
+	} finally {
+		fs.rmSync(dir3, { recursive: true, force: true });
 	}
 })();
 
@@ -1596,8 +1611,9 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	});
 	if (!py) { ok(true, 'python not available - link_presets_to_html.py checks skipped'); return; }
 	var root = p.join(__dirname, '..');
+	// the scripts work on the save/ folder next to index.html
 	function runLink(dir) {
-		cp.execSync(py + ' ' + JSON.stringify(p.join(root, 'link_presets_to_html.py')), { cwd: dir, stdio: 'pipe' });
+		cp.execSync(py + ' ' + JSON.stringify(p.join(root, 'save', 'link_presets_to_html.py')), { cwd: dir, stdio: 'pipe' });
 	}
 	function moduleJs(s) {
 		return '(function (root) {\n\tvar S = ' + JSON.stringify(s) + ';\n' +
@@ -1612,7 +1628,7 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 		while ((m = re.exec(html))) order.push(m[1]);
 		var ctx = {};
 		vm.createContext(ctx);
-		vm.runInContext(fs.readFileSync(p.join(dir, 'default.js'), 'utf8'), ctx, { filename: 'default.js' });
+		vm.runInContext(fs.readFileSync(p.join(dir, 'save', 'default.js'), 'utf8'), ctx, { filename: 'default.js' });
 		for (var i = 0; i < order.length; i++)
 			vm.runInContext(fs.readFileSync(p.join(dir, order[i]), 'utf8'), ctx, { filename: order[i] });
 		return { ctx: ctx, order: order };
@@ -1623,36 +1639,37 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	var dir = fs.mkdtempSync(p.join(os.tmpdir(), 'spiro-link-'));
 	try {
 		fs.copyFileSync(p.join(root, 'index.html'), p.join(dir, 'index.html'));
+		fs.mkdirSync(p.join(dir, 'save'));
 		var base = Gear.serialize(Gear.defaultScene(), { zoom: 1, pan: [0, 0] }, 1, 'frequency');
-		fs.writeFileSync(p.join(dir, 'default.js'),
+		fs.writeFileSync(p.join(dir, 'save', 'default.js'),
 			'(function (root) {\n' +
 			'\tvar S = ' + JSON.stringify(base) + ';\n' +
 			'\tvar PRESETS = [];\n' +
 			'\tif (typeof module !== \'undefined\' && module.exports) module.exports = { SETTINGS: S, PRESETS: PRESETS };\n' +
 			'\telse { root.SETTINGS = S; root.PRESETS = PRESETS; }\n' +
 			'})(typeof window !== \'undefined\' ? window : globalThis);\n');
-		fs.writeFileSync(p.join(dir, 'a.js'), moduleJs(sA));
-		fs.writeFileSync(p.join(dir, 'b.js'), moduleJs(sB));
-		fs.writeFileSync(p.join(dir, 'plain.json'), JSON.stringify(sA));
-		fs.writeFileSync(p.join(dir, 'not-a-scene.js'), 'console.log("x");\n');
+		fs.writeFileSync(p.join(dir, 'save', 'a.js'), moduleJs(sA));
+		fs.writeFileSync(p.join(dir, 'save', 'b.js'), moduleJs(sB));
+		fs.writeFileSync(p.join(dir, 'save', 'plain.json'), JSON.stringify(sA));
+		fs.writeFileSync(p.join(dir, 'save', 'not-a-scene.js'), 'console.log("x");\n');
 
 		// 1. first run: a tag per scene file, files converted, markers written
 		runLink(dir);
 		var html1 = fs.readFileSync(p.join(dir, 'index.html'), 'utf8');
-		ok(html1.indexOf('<script src="a.js" class="preset"></script>') > 0 &&
-			html1.indexOf('<script src="b.js" class="preset"></script>') > 0,
-			'link inserts a preset tag per scene file');
-		var dIdx = html1.indexOf('src="default.js"'), aIdx = html1.indexOf('src="a.js"'), mIdx = html1.indexOf('src="js/main.js"');
-		ok(dIdx > -1 && dIdx < aIdx && aIdx < mIdx, 'tags sit between default.js and js/main.js');
-		ok(html1.indexOf('src="plain.json"') < 0, 'json files are not linked');
-		var fa = fs.readFileSync(p.join(dir, 'a.js'), 'utf8');
+		ok(html1.indexOf('<script src="save/a.js" class="preset"></script>') > 0 &&
+			html1.indexOf('<script src="save/b.js" class="preset"></script>') > 0,
+			'link inserts a save/ preset tag per scene file');
+		var dIdx = html1.indexOf('src="save/default.js"'), aIdx = html1.indexOf('src="save/a.js"'), mIdx = html1.indexOf('src="js/main.js"');
+		ok(dIdx > -1 && dIdx < aIdx && aIdx < mIdx, 'tags sit between save/default.js and js/main.js');
+		ok(html1.indexOf('src="save/plain.json"') < 0, 'json files are not linked');
+		var fa = fs.readFileSync(p.join(dir, 'save', 'a.js'), 'utf8');
 		ok(fa.split('\n')[0] === '// preset: a.js', 'the marker line records the file name');
 		ok(fa.indexOf('root.PRESETS') > 0 && fa.indexOf('root.SETTINGS = S') < 0,
 			'linked files append to PRESETS, never set SETTINGS');
 		// second run: byte-stable
 		runLink(dir);
 		ok(fs.readFileSync(p.join(dir, 'index.html'), 'utf8') === html1 &&
-			fs.readFileSync(p.join(dir, 'a.js'), 'utf8') === fa,
+			fs.readFileSync(p.join(dir, 'save', 'a.js'), 'utf8') === fa,
 			'a second run changes nothing (idempotent)');
 
 		// the page picks the presets up in tag order, startup scene intact
@@ -1666,22 +1683,22 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 			'linked preset scenes keep their content');
 
 		// 2. rename: the tag follows the file (via its marker)
-		fs.renameSync(p.join(dir, 'a.js'), p.join(dir, 'a2.js'));
+		fs.renameSync(p.join(dir, 'save', 'a.js'), p.join(dir, 'save', 'a2.js'));
 		runLink(dir);
 		var html2 = fs.readFileSync(p.join(dir, 'index.html'), 'utf8');
-		ok(html2.indexOf('src="a2.js"') > 0 && html2.indexOf('src="a.js"') < 0, 'rename moves the tag');
-		ok(fs.readFileSync(p.join(dir, 'a2.js'), 'utf8').split('\n')[0] === '// preset: a2.js',
+		ok(html2.indexOf('src="save/a2.js"') > 0 && html2.indexOf('src="save/a.js"') < 0, 'rename moves the tag');
+		ok(fs.readFileSync(p.join(dir, 'save', 'a2.js'), 'utf8').split('\n')[0] === '// preset: a2.js',
 			'the marker follows the rename');
 
 		// 3. delete: the tag is dropped
-		fs.unlinkSync(p.join(dir, 'b.js'));
+		fs.unlinkSync(p.join(dir, 'save', 'b.js'));
 		runLink(dir);
 		var html3 = fs.readFileSync(p.join(dir, 'index.html'), 'utf8');
-		ok(html3.indexOf('src="b.js"') < 0, 'delete drops the tag');
-		ok(html3.indexOf('src="a2.js"') > 0, 'other tags survive the cleanup');
+		ok(html3.indexOf('src="save/b.js"') < 0, 'delete drops the tag');
+		ok(html3.indexOf('src="save/a2.js"') > 0, 'other tags survive the cleanup');
 
 		// 4. a new file gains a tag on the next run
-		fs.writeFileSync(p.join(dir, 'c.js'), moduleJs(sC));
+		fs.writeFileSync(p.join(dir, 'save', 'c.js'), moduleJs(sC));
 		runLink(dir);
 		var sim2 = loadAll(dir);
 		ok(sim2.ctx.PRESETS.map(function (x) { return x.name; }).join(',') === 'a2,c',
@@ -1689,14 +1706,14 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 			sim2.ctx.PRESETS.map(function (x) { return x.name; }).join(','));
 
 		// 5. the merge script leaves linked files alone, consumes the rest
-		fs.writeFileSync(p.join(dir, 'plain2.js'), moduleJs(sB));
-		cp.execSync(py + ' ' + JSON.stringify(p.join(root, 'presets_merge_to_default.js.py')), { cwd: dir, stdio: 'pipe' });
-		ok(fs.existsSync(p.join(dir, 'a2.js')) && fs.existsSync(p.join(dir, 'c.js')),
+		fs.writeFileSync(p.join(dir, 'save', 'plain2.js'), moduleJs(sB));
+		cp.execSync(py + ' ' + JSON.stringify(p.join(root, 'save', 'presets_merge_to_default.js.py')), { cwd: dir, stdio: 'pipe' });
+		ok(fs.existsSync(p.join(dir, 'save', 'a2.js')) && fs.existsSync(p.join(dir, 'save', 'c.js')),
 			'merge leaves linked files in place');
-		ok(fs.existsSync(p.join(dir, 'plain2.js.delete-me')), 'merge consumes the unlinked file');
+		ok(fs.existsSync(p.join(dir, 'save', 'plain2.js.delete-me')), 'merge consumes the unlinked file');
 		var djCtx = {};
 		vm.createContext(djCtx);
-		vm.runInContext(fs.readFileSync(p.join(dir, 'default.js'), 'utf8'), djCtx, { filename: 'default.js' });
+		vm.runInContext(fs.readFileSync(p.join(dir, 'save', 'default.js'), 'utf8'), djCtx, { filename: 'default.js' });
 		ok(djCtx.PRESETS.map(function (x) { return x.name; }).join(',') === 'plain,plain2',
 			'merged presets land in default.js only',
 			djCtx.PRESETS.map(function (x) { return x.name; }).join(','));

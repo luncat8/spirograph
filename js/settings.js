@@ -102,6 +102,33 @@
 		return d;
 	}
 
+	// ---- backgrounds ----------------------------------------------------
+	// full-screen analytic environments behind the figure (ports of the
+	// luncat8/glass-spheres-shader interiors, js/glsl_lib.js GLSL.env). a
+	// background is direction-only like a cubemap, so 3D samples it through
+	// the orbit camera and 2D through a fixed window direction. 'black' is
+	// the plain clear colour - no pass is drawn at all.
+	var BACKGROUNDS = {
+		black: { label: 'black' },
+		checker: { label: 'checker land' },
+		rainbow: { label: 'rainbow' },
+		colorbox: { label: 'color box' }
+	};
+	var BACKGROUND_IDS = ['black', 'checker', 'rainbow', 'colorbox'];
+
+	// ---- guide-circle hue animation -------------------------------------
+	// what drives the colour of the `circles` outlines (main.js):
+	//   off      : the static guide colour
+	//   distance : the gear's distance from its parent gear's centre
+	//   speed    : how fast that distance changes (d distance / dt)
+	// a root gear has no parent: its distance is 0 (the wheel's base hue).
+	var CIRCLE_HUES = {
+		off: { label: 'off' },
+		distance: { label: 'distance from parent' },
+		speed: { label: 'speed at parent centre' }
+	};
+	var CIRCLE_HUE_IDS = ['off', 'distance', 'speed'];
+
 	// coerce a loaded flag to a real boolean. default-on fields stay ON for
 	// every value except an explicit false / 0 (matches the old loader, which
 	// only honored an actual boolean and treated numeric 0 as off).
@@ -189,6 +216,13 @@
 			apply: function (s, A, GUI) { A.showCircles = s.showCircles; GUI.setShowCircles(s.showCircles); A.markDirty(); }
 		},
 		{
+			// hue source of the guide circles (see CIRCLE_HUES)
+			key: 'circleHue', def: 'off', persist: true,
+			get: function (A) { return A.circleHue; },
+			clean: function (v) { return CIRCLE_HUES[v] ? v : undefined; },
+			apply: function (s, A, GUI) { A.circleHue = s.circleHue; GUI.setCircleHue(s.circleHue); A.markDirty(); }
+		},
+		{
 			key: 'showDial', def: false, persist: true,
 			get: function (A) { return A.showDial; },
 			clean: function (v) { return boolOff(v); },
@@ -205,6 +239,14 @@
 			get: function (A) { return A.glowPoints; },
 			clean: function (v) { return boolOff(v); },
 			apply: function (s, A, GUI) { A.glowPoints = s.glowPoints; GUI.setGlow(s.glowPoints); A.markDirty(); }
+		},
+		{
+			// 3D world axes at the root (X red, Y green, Z blue). defaults ON:
+			// they were always drawn before the toggle existed.
+			key: 'showAxis', def: true, persist: true,
+			get: function (A) { return A.showAxis; },
+			clean: function (v) { return boolOn(v); },
+			apply: function (s, A, GUI) { A.showAxis = s.showAxis; GUI.setShowAxis(s.showAxis); A.markDirty(); }
 		},
 		{
 			key: 'drawTrails', def: true, persist: true,
@@ -247,6 +289,13 @@
 			get: function (A) { return A.sphereParams; },
 			clean: function (v) { return sanitizeSphereParams(v); },
 			apply: function (s, A, GUI) { A.sphereParams = s.sphereParams; GUI.setSphereParams(s.sphereParams); A.markDirty(); }
+		},
+		{
+			// full-screen background (see BACKGROUNDS); view-only, drawn live.
+			key: 'background', def: 'black', persist: true,
+			get: function (A) { return A.background; },
+			clean: function (v) { return BACKGROUNDS[v] ? v : undefined; },
+			apply: function (s, A, GUI) { A.background = s.background; GUI.setBackground(s.background); A.markDirty(); }
 		},
 		{
 			// 3D auto-rotate toggle, persisted next to its two speeds. the
@@ -330,6 +379,10 @@
 		clamp: clamp,
 		SPHERE_SHADERS: SPHERE_SHADERS,
 		SPHERE_SHADER_IDS: SPHERE_SHADER_IDS,
+		BACKGROUNDS: BACKGROUNDS,
+		BACKGROUND_IDS: BACKGROUND_IDS,
+		CIRCLE_HUES: CIRCLE_HUES,
+		CIRCLE_HUE_IDS: CIRCLE_HUE_IDS,
 		clampSphereParam: clampSphereParam,
 		sphereDefaults: sphereDefaults,
 		sanitizeSphereParams: sanitizeSphereParams,
