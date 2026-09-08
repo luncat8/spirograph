@@ -169,14 +169,19 @@ def find_tag_lines(lines):
 
 
 def main():
-	cwd = Path(".")
-	if not (cwd / "index.html").is_file():
-		die("no index.html in the working directory - run from the app dir")
-	scenes_dir = cwd / SAVE_DIR
+	cwd = Path(".").resolve()
+	if (cwd / "index.html").is_file():
+		app_dir = cwd
+		scenes_dir = cwd / SAVE_DIR
+	elif not (cwd.parent / "index.html").is_file():
+		die("no index.html in the working directory or its parent - run from the app dir or %s/" % SAVE_DIR)
+	else:
+		app_dir = cwd.parent
+		scenes_dir = cwd
 	if not scenes_dir.is_dir():
-		die("no %s/ directory next to index.html - run from the app dir" % SAVE_DIR)
+		die("no %s/ directory found - run from the app dir or %s/" % (SAVE_DIR, SAVE_DIR))
 
-	html = (cwd / "index.html").read_text(encoding="utf-8")
+	html = (app_dir / "index.html").read_text(encoding="utf-8")
 	lines = html.split("\n")
 
 	# candidate scene files (in name order; the tag order below follows it)
@@ -273,7 +278,7 @@ def main():
 
 	new_html = "\n".join(out)
 	if new_html != html:
-		(cwd / "index.html").write_text(new_html, encoding="utf-8")
+		(app_dir / "index.html").write_text(new_html, encoding="utf-8")
 
 	old_src_at = {i: src for i, src in tag_lines}
 	print("index.html preset tags (between %s/%s and js/main.js):" % (SAVE_DIR, DEFAULT_NAME))

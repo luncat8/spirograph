@@ -138,9 +138,15 @@ def write_default(path, scene, presets):
 
 
 def main():
-	scenes_dir = Path.cwd() / SAVE_DIR
+	cwd = Path.cwd()
+	if (cwd / DEFAULT_NAME).is_file():
+		scenes_dir = cwd
+		loc_label = "this folder"
+	else:
+		scenes_dir = cwd / SAVE_DIR
+		loc_label = SAVE_DIR + "/"
 	if not scenes_dir.is_dir():
-		raise SystemExit("no %s/ directory in the working directory - run from the app dir" % SAVE_DIR)
+		raise SystemExit("no %s/ directory or %s in the working directory - run from the app dir or %s/" % (SAVE_DIR, DEFAULT_NAME, SAVE_DIR))
 	default_path = scenes_dir / DEFAULT_NAME
 	scene, presets = read_default(default_path)
 
@@ -182,7 +188,7 @@ def main():
 			extra.append("skipped: " + ", ".join(skipped))
 		if linked:
 			extra.append("linked (index.html): " + ", ".join(linked))
-		print("no scene files found in " + SAVE_DIR + "/ - " + DEFAULT_NAME + " unchanged"
+		print("no scene files found in " + loc_label + " - " + DEFAULT_NAME + " unchanged"
 		  + ("" if not extra else " (" + "; ".join(extra) + ")"))
 		return
 

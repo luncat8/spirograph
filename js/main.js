@@ -254,6 +254,7 @@
 		App.paused = !App.paused;
 		GUI.setPaused(App.paused);
 		toast(App.paused ? 'paused' : 'running');
+		App.markDirty();
 	};
 
 	App.clearTraces = function () {
@@ -449,6 +450,7 @@
 		if (mp === App.maxPeriod) return;
 		App.maxPeriod = mp;
 		recomputeWholeIfChanged();
+		markDirty();
 	};
 
 	// whole-mode bake resolution (points per turn of the root). this - not the
@@ -458,6 +460,7 @@
 		if (sp === App.samplesPerTurn) return;
 		App.samplesPerTurn = sp;
 		recomputeWholeIfChanged();
+		markDirty();
 	};
 
 	// ---- 3D mode API ----
@@ -542,6 +545,7 @@
 		v = !!v;
 		if (v === App.autoRotate) return;
 		App.autoRotate = v;
+		markDirty();
 		if (v) { viewDirty = true; App.requestRender(); }
 		else settleCamera();
 	};
@@ -978,6 +982,7 @@
 			// on; turning it off restores the full tree (the tree itself is
 			// untouched - rosettes are valid off-symmetry trees too).
 			GUI.rebuildLevels();
+			markDirty();
 			return;
 		}
 		// committing to symmetry rewrites the live tree into uniform
@@ -994,6 +999,7 @@
 		syncMenu();
 		afterSceneChange();
 		GUI.rebuildLevels();
+		markDirty();
 	};
 	// load path: an old-format save (full tree) with symmetry on predates the
 	// one-gear-per-level format - commit it so what is loaded is exactly what
