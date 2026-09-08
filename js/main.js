@@ -55,7 +55,8 @@
 		sphereParams: Settings.sphereDefaults(),  // per-shader slider bags
 		background: 'black',   // full-screen background (Settings.BACKGROUNDS)
 		circleHue: 'off',      // guide-circle hue source (Settings.CIRCLE_HUES)
-		circleHueTarget: 'grandparent'   // hue distance anchor (CIRCLE_HUE_TARGETS)
+		circleHueTarget: 'grandparent',   // hue distance anchor (CIRCLE_HUE_TARGETS)
+		circleHueK: 1          // hue scale (how distance/speed read as hue)
 	};
 
 	var TAU = Math.PI * 2;
@@ -620,6 +621,14 @@
 		if (!Settings.CIRCLE_HUE_TARGETS[v]) return;
 		App.circleHueTarget = v; primeGuideHue(); markDirty();
 	};
+	// how much hue a unit of distance / speed is worth (1 = stock mapping).
+	// unlike the two switches above this does NOT re-prime the scratch: the
+	// measured distances and rates are unchanged, only their colour reads.
+	App.setCircleHueK = function (v) {
+		v = Settings.clamp('circleHueK', v);
+		if (v === App.circleHueK) return;
+		App.circleHueK = v; markDirty();
+	};
 	// glass sphere shells (view-only; drawn live each render, no overlay bake).
 	// sphereShader selects the ray tracer ('off' | 'hollow' | 'layers');
 	// each shader keeps its own slider bag in App.sphereParams[shader].
@@ -964,7 +973,13 @@
 		v = !!v;
 		if (v === App.symmetry) return;
 		App.symmetry = v;
-		if (!v) return;
+		if (!v) {
+			// the gear list collapses to one row per level while symmetry is
+			// on; turning it off restores the full tree (the tree itself is
+			// untouched - rosettes are valid off-symmetry trees too).
+			GUI.rebuildLevels();
+			return;
+		}
 		// committing to symmetry rewrites the live tree into uniform
 		// rosettes; refuse the toggle (and re-sync the checkbox) when that
 		// would exceed the gear limit.
@@ -1739,9 +1754,11 @@
 	// apart but never animates, and leaves 'speed' at the base hue. one level
 	// further out the anchor itself moves and the hue flows; the root anchor
 	// reads the fixed radial distance inside the figure. both sources refresh
-	// once per render; a gear with no anchor (a lone root) measures 0.
-	var HUE_DIST_TURNS = 1.6;      // hue cycles per world unit of distance
-	var HUE_RATE_TURNS = 0.5;      // hue cycles per (world unit / second)
+	// once per render; a gear with no anchor (a lone root) measures 0. both
+	// sources are scaled by App.circleHueK (the 'hue scale k' slider): how
+	// many hue cycles a unit of distance / a unit-per-second rate is worth.
+	var HUE_DIST_TURNS = 1.6;      // hue cycles per world unit of distance (at k = 1)
+	var HUE_RATE_TURNS = 0.5;      // hue cycles per (world unit / second) (at k = 1)
 	var HUE_SAT = 0.8;
 	var hueRgb = [0, 0, 0];        // shared scratch (no per-frame allocation)
 	var frameDt = 0;               // dt of the frame being rendered
@@ -1798,9 +1815,11 @@
 
 	// outline colour of one gear: null when the hue animation is off (the
 	// caller keeps its static colour), else the shared hueRgb scratch.
+	// App.circleHueK scales the mapping for BOTH sources (0 = frozen).
 	function circleColor(g) {
 		if (App.circleHue === 'off') return null;
-		var v = App.circleHue === 'distance' ? g.distPrev * HUE_DIST_TURNS : g.distRate * HUE_RATE_TURNS;
+		var k = App.circleHueK;
+		var v = (App.circleHue === 'distance' ? g.distPrev * HUE_DIST_TURNS : g.distRate * HUE_RATE_TURNS) * k;
 		var h = v - Math.floor(v);
 		var i = Math.floor(h * 6), f = h * 6 - i;
 		var p = 1 - HUE_SAT, q = 1 - HUE_SAT * f, t = 1 - HUE_SAT * (1 - f);
@@ -2159,7 +2178,7 @@
 		shader: 'hollow',
 		camPos: sphCam.camPos, camRt: sphCam.camRt, camUp: sphCam.camUp, camFw: sphCam.camFw,
 		focal: 1, ortho: 0, bgDist: 1, maxShift: 3, tint: sphTint,
-		wall: 0.1, ior: 1.45, density: 0.7, irid: 0.5, disp: 0.3, layers: 6, time: 0
+		wall: 0.1, ior: 1.45, density: 0.7, irid: 0.5, disp: 0.3, layers: 6, time: 0, theme: 0
 	};
 
 	function sphCmp(a, b) { return sphKeys[b] - sphKeys[a]; }
@@ -2276,6 +2295,8 @@
 		sphUniforms.disp = bag.disp != null ? bag.disp : 0;
 		sphUniforms.layers = bag.layers != null ? bag.layers : 3;
 		sphUniforms.time = nowMs() / 1000;
+		// the shells reflect the env the canvas shows behind the figure
+		sphUniforms.theme = R.bgTheme(App.background);
 		R.sphDraw(sphUniforms);
 	}
 

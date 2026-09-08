@@ -838,6 +838,79 @@ re-verification this round (no WebGL-path change).
   classList, all already stubbed; getBoundingClientRect's fixed 600x600 is
   why the row click lands at 610,0 and openMenu clamps it).
 
+## done (0.7.9) - hue scale k, parent-nested gear tree, reference glass look
+
+### 1. 'hue scale k' slider for the circles hue
+- settings.js: LIMITS.circleHueK (0..8, step 0.1, def 1, float) + one
+  APP_SCHEMA entry (persist, clamp, GUI sync + markDirty) - that is all a
+  new persisted toggle costs in this codebase.
+- main.js: App.circleHueK field + App.setCircleHueK (clamped, no scratch
+  re-prime - the raw distances / rates are unchanged, only their colour
+  read). circleColor() multiplies BOTH sources by k (distance * turns * k,
+  rate * turns * k); k = 0 freezes the hue (every gear reads hue 0).
+- gui.js: 'hue scale k' sliderRow in the view group between the hue selects
+  and the help line, ref key circleHueK, GUI.setCircleHueK syncs it.
+- tests: circleHueK (k=0 gives one colour for every gear, k=1 vs k=2 read
+  different hues, k leaves distPrev alone, clamps, sanitize fallback,
+  app-bag + saved-scene round trip, the real slider driving the setter,
+  reset restores 1).
+
+### 2. the gear list nests by parent (hierarchical tree)
+- gui.js buildGearTree is now a recursive buildBranch(host, gear, depth):
+  the gear, then its children under it - depth-first, indented, no level
+  headers ('.tlev' CSS is gone). the list reads as the parent-child
+  structure, not as a flat table.
+- symmetry collapses the list to the first gear per level - exactly the
+  spine a symmetry save stores (one gear per level per root) - and
+  gearInfo() appends ' x N' (the parent's child count) so the row still
+  conveys the rosette size. turning symmetry OFF rebuilds the full list
+  (setSymmetry(false) gained a GUI.rebuildLevels() - it used to return
+  without one, which was invisible while the list mirrored all gears anyway).
+- rows are still the same live {gear, node, info, chip1, chip2} objects:
+  highlight / click-to-open / refreshTreeRow / rebuildLevels all work
+  unchanged; refreshTreeRow(g) already rewrites g's sub-tree rows, which is
+  exactly the branch shape of the new order.
+- tests: gearTreeList rewritten - depth-first parent-nesting (each row's
+  parent appears above it), indent follows depth, no headers, the symmetry
+  spine (3 rows for a 1+3+6 tree) with x3 / x2 markers, a mirrored edit
+  refreshing the spine row, symmetry off restoring all 10 rows, plus the
+  old click / canvas-pick / grow / remove checks.
+
+### 3. hollow glass = the reference shader, formula for formula
+- the drift, root-caused against luncat8/glass-spheres-shader (hollow_bubbles.js):
+  a) the reflections sampled a custom view-space studio sky (envView + a
+     warm key light) instead of the reference checker-land env with its sun;
+  b) the tonemap dropped the reference gamma (pow 1/2.2 after the filmic
+     curve) - rims rendered flatter and darker;
+  c) the Beer-Lambert absorption divided the glass path by uWall*R (x0.16),
+     so the SAME tint slider read ~2.5x weaker at the default wall and 10x
+     stronger / weaker at the extremes - absorption in the reference depends
+     only on the path actually travelled (chord * 3.5);
+  d) the absorption palette mixed the user tint colour at 30% instead of the
+     reference golden-ratio tintOf.
+- render.js: GLSL_ENV is now ONE shared GLSL constant - the reference
+  GLSL.env themes 0-2 + envSun (SUN_DIR mirrored to (0.35, 0.62, 0.70)
+  because our camera looks from +z/+y where the reference looks from -z) -
+  spliced into BOTH the background pass (which already carried a copy of the
+  same functions inline) and SPH_COMMON. the sphere env is sampled in WORLD
+  space, so the shells reflect the env the canvas actually draws behind
+  them, and a uTheme uniform (R.bgTheme(App.background), 'black' -> checker)
+  keeps the reflections in step with the background select.
+- hollow: crossWall now absorbs exp(-tintOf(idx) * uDensity * chord * 3.5)
+  with the reference tintOf - per-gear golden-ratio tints, no user tint; the
+  tonemap gets the reference gamma; envView / absorbOf are deleted. every
+  other number (film, swirl, Fresnel, F2, bend, dispersion, wall events)
+  already matched the reference line for line. the user tint row (uTint)
+  now belongs to the LAYERS shader only - the GUI hides 'sphere tint'
+  unless layered glass is selected (hollow really is the six reference
+  sliders and nothing else).
+- structural GLSL check: the assembled sources were extracted from the
+  built arrays and balance-checked (braces / parens / duplicate function
+  definitions) plus spot-checked for the reference formulas - there is no
+  GPU in this sandbox, so the final word is a real browser, same as before.
+- tests: the glassSpheres panel checks now assert the tint row hides for
+  off / hollow and shows for layers.
+
 ## next
 - optional polish (from the 0.6 plan's future-work list): real near-plane
   segment clipping (currently edge-clamped streaks when inside the figure), 

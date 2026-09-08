@@ -1,5 +1,28 @@
 # CHANGELOG
 
+## 0.7.9 - hue scale k, a parent-nested gear tree, and the reference glass look
+- **`hue scale k` slider** next to the circles-hue selects: how much hue a
+  unit of distance / a unit-per-second rate is worth. 1 is the stock mapping,
+  0 freezes the hue, and it scales BOTH sources (distance and speed). it only
+  re-maps the colour - the measured distances and rates are untouched, so
+  dragging it never reads as a rate spike. persisted like the other hue
+  fields (save / load / reset / autosave).
+- **the gear list is now hierarchical**: one row per gear, nested under its
+  parent (depth-first, indented), instead of a flat per-level table with
+  headers. in symmetry mode the list collapses to the first gear per level -
+  the spine a symmetry save stores - and each such row carries its rosette
+  size (`× N`), so a 12x12 rosette reads as a 4-row chain. turning symmetry
+  off brings every gear back.
+- **the hollow glass shader now matches the reference
+  (luncat8/glass-spheres-shader hollow_bubbles) formula for formula.** the
+  shells reflect the reference environment (checker land + sun, in world
+  space - the same GLSL the background pass draws), the filmic tonemap gets
+  the reference gamma, and the Beer-Lambert absorption is the reference
+  per-bubble golden-ratio palette over the actual glass path (it no longer
+  scales with the wall fraction, which made thin walls absorb 10x more).
+  the `sphere tint` colour row belongs to the layered-glass shader now, so
+  hollow bubbles really is the six reference sliders and nothing else.
+
 ## 0.7.8 - striped menu groups, a gear tree, and a hue that finally moves
 - **the panel and the gear menu are split into groups.** playback (pause /
   clear / reset / anim speed), scene (preset, copy / save / open / paste,

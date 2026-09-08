@@ -1021,14 +1021,32 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	var txt = panelText();
 	ok(txt.indexOf('glass shader') >= 0, 'panel has the shader selector');
 	ok(txt.indexOf('hollow glass bubbles') >= 0 && txt.indexOf('analytic layered glass') >= 0, 'selector lists both shaders');
-	ok(txt.indexOf('sphere tint') >= 0, 'panel has the sphere tint color picker');
+	// the tint row belongs to layered glass: hollow follows the reference
+	// shader's automatic per-gear palette, so the row hides there.
+	function tintRowWrap() {
+		var found = null;
+		(function walk(n) {
+			if (found || !n || !n.children) return;
+			for (var i = 0; i < n.children.length; i++) {
+				var c = n.children[i];
+				if (c.children && c.children[0] && c.children[0].textContent === 'sphere tint') { found = c; return; }
+				walk(c);
+			}
+		})(w.byId.panel);
+		return found;
+	}
+	var tintWrap = tintRowWrap();
+	ok(!!tintWrap, 'panel has the sphere tint color picker');
+	ok(tintWrap.style.display === 'none', 'shader off: the sphere tint row is hidden');
 	ok(txt.indexOf('|wall ') < 0, 'shader off: no slider rows', txt);
 	App.setSphereShader('hollow'); w.GUI.setSphereShader('hollow');
 	txt = panelText();
 	ok(txt.indexOf('|wall ') >= 0 && txt.indexOf('|disp ') >= 0 && txt.indexOf('|layers ') >= 0, 'hollow bubbles: wall/ior/tint/iris/disp/layers rows', txt);
+	ok(tintRowWrap().style.display === 'none', 'hollow bubbles: no tint row (reference palette)');
 	App.setSphereShader('layers'); w.GUI.setSphereShader('layers');
 	txt = panelText();
 	ok(txt.indexOf('|iris ') >= 0 && txt.indexOf('|disp ') < 0 && txt.indexOf('|layers ') < 0, 'analytic layers: no disp/layers rows', txt);
+	ok(tintRowWrap().style.display === '', 'analytic layers: the tint row shows');
 	// render frames with each shader on, 2D and 3D (must not throw / break trails)
 	Settings.applyApp({ sphereShader: 'hollow' }, App, w.GUI);
 	w.tick(150, 16);
@@ -1808,10 +1826,9 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	ok(css.indexOf('.group > .gh') >= 0, 'CSS: the group title band');
 })();
 
-// ---- 0.7.8: the gear tree under the level sliders ----------------------
+// ---- 0.7.8 / 0.7.9: the gear tree under the level sliders --------------
 (function gearTreeList() {
 	var GUI = w.GUI;
-	function dep(g) { var d = 0; while (g.parent) { g = g.parent; d++; } return d; }
 	App.resetScene();
 	App.applyLevel(1, 3);
 	App.applyLevel(2, 2);                 // 10 gears: 1 root, 3 at level 1, 6 at level 2
@@ -1821,12 +1838,23 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	for (var i = 0; i < App.allGears.length; i++)
 		for (var j = 0; j < rows.length; j++) if (rows[j].gear === App.allGears[i]) { covered++; break; }
 	ok(covered === rows.length, 'tree: every gear appears exactly once');
-	var byLevel = true;
-	for (var k = 1; k < rows.length; k++) if (dep(rows[k].gear) < dep(rows[k - 1].gear)) byLevel = false;
-	ok(byLevel, 'tree: the rows run level by level');
-	ok(rows[0].gear === App.roots[0], 'tree: the roots lead');
+	// hierarchical, not a flat level table: depth-first, each gear right
+	// before the branch of its own children.
+	var dfsOk = rows[0].gear === App.roots[0];
+	for (var k = 1; k < rows.length; k++) {
+		var g = rows[k].gear, p = g.parent;
+		if (!p || rows[k - 1].gear === p) continue;   // root row or direct child of the previous row
+		var seen = false;
+		for (var q = 0; q < k; q++) if (rows[q].gear === p) { seen = true; break; }
+		if (!seen) { dfsOk = false; break; }
+	}
+	ok(dfsOk, 'tree: the rows nest by parent, depth-first');
+	ok(rows[0].node.style.paddingLeft === '6px' && rows[1].node.style.paddingLeft === '18px' &&
+		rows[2].node.style.paddingLeft === '30px' && rows[4].node.style.paddingLeft === '18px',
+		'tree: the indent follows the depth');
 	var paths = rows.map(function (r) { return r.node.children[2].textContent; });
-	ok(paths[0] === '#0' && paths[1] === '#0.0' && paths[4] === '#0.0.0' && paths[paths.length - 1] === '#0.2.1',
+	ok(paths[0] === '#0' && paths[1] === '#0.0' && paths[2] === '#0.0.0' &&
+		paths[3] === '#0.0.1' && paths[4] === '#0.1' && paths[paths.length - 1] === '#0.2.1',
 		'tree: each row names its place in the tree', paths.join(' '));
 	var heads = [];
 	(function walk(n) {
@@ -1835,13 +1863,12 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 			else walk(n.children[i]);
 		}
 	})(w.byId.panel);
-	ok(heads.join('|') === 'main gears - 1|lvl 1 - 3|lvl 2 - 6',
-		'tree: one header per level, counting its gears', heads.join('|'));
+	ok(heads.length === 0, 'tree: no level headers (grouped by parent, not by level)');
 	var chip = rows[1].node.children[0];
 	ok(chip.className === 'chip' && /^#[0-9a-f]{6}$/i.test(String(chip.style.background)),
 		'tree: a row carries its pencil colour as a dot', chip.style.background);
 	// click a row -> that gear's menu opens and the row lights up (one row only)
-	var pick = rows[4];
+	var pick = rows[2];                   // gear #0.0.0, two levels deep
 	pick.node.dispatch('click');
 	ok(GUI.isMenuOpen() && GUI.menuGear() === pick.gear, 'tree: clicking a row opens that gear menu');
 	var sel = rows.filter(function (r) { return r.node.classList.contains('sel'); });
@@ -1854,20 +1881,28 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	GUI.closeMenu();
 	ok(rows.filter(function (r) { return r.node.classList.contains('sel'); }).length === 0,
 		'tree: closing the menu clears the highlight');
-	// a mirrored (symmetry) edit touched the whole level, so every row follows
+	// symmetry collapses the list to the first gear per level: the spine a
+	// symmetry save stores, each child row marked with its rosette size.
 	App.setSymmetry(true);
+	var symRows = GUI.gearTree();
+	ok(symRows.length === 3, 'symmetry: one row per level', symRows.length);
+	ok(symRows[0].gear === App.roots[0] &&
+		symRows[1].gear === App.roots[0].children[0] &&
+		symRows[2].gear === App.roots[0].children[0].children[0],
+		'symmetry: the rows are the first-gear spine of the tree');
+	ok(symRows[1].info.textContent.indexOf('×3') >= 0 && symRows[2].info.textContent.indexOf('×2') >= 0,
+		'symmetry: each spine row carries its rosette size',
+		symRows[1].info.textContent + ' | ' + symRows[2].info.textContent);
+	// a mirrored (symmetry) edit rewrites the whole level - and its row
 	GUI.openMenu(App.roots[0].children[0], 20, 20);
 	dia = rowByLabel(w.byId.ctxmenu, 'diameter');
 	dia.input.value = 0.3;
 	dia.input.dispatch('input');
-	var lvl1 = GUI.gearTree().filter(function (r) { return r.gear.parent === App.roots[0]; });
-	var mirrored = lvl1.length === 3 && lvl1.every(function (r) {
-		return r.info.textContent.indexOf('d 0.3') === 0;
-	});
-	ok(mirrored, 'tree: a symmetry edit refreshes every sibling row',
-		lvl1.map(function (r) { return r.info.textContent; }).join(' | '));
+	ok(GUI.gearTree()[1].info.textContent.indexOf('d 0.3') === 0,
+		'tree: a symmetry edit refreshes the level row', GUI.gearTree()[1].info.textContent);
 	GUI.closeMenu();
 	App.setSymmetry(false);
+	ok(GUI.gearTree().length === App.allGears.length, 'symmetry off: every gear gets its row back');
 	// the same highlight from the other direction: a pick ON THE CANVAS. a
 	// one-gear scene keeps the hit test unambiguous (the SMALLEST circle under
 	// the pointer wins, so overlapping gears would steal the pick).
@@ -1992,6 +2027,71 @@ ok(App.allGears.length === 2, 'default scene has 2 gears', App.allGears.length);
 	anchorSel.value = 'parent';
 	anchorSel.dispatch('change');
 	ok(w2.App.circleHueTarget === 'parent', 'the select drives App.setCircleHueTarget');
+	App.resetScene();
+})();
+
+// ---- 0.7.9: the hue scale k slider -------------------------------------
+(function circleHueK() {
+	if (App.paused) App.togglePause();
+	App.setMode('animate');
+	App.resetScene();
+	App.applyLevel(1, 2);
+	App.applyLevel(2, 2);                 // 7 gears: 1 root, 2 at level 1, 4 at level 2
+	App.setCircleHue('distance');
+	App.setCircleHueTarget('root');
+	ok(App.circleHueK === 1, 'hue scale defaults to 1 (the stock mapping)');
+	// the outline colours, read off the real draw call (the hue outline is the
+	// only circle drawn at alpha 0.85).
+	function snapshot() {
+		var cols = [];
+		var real = w.R.circle;
+		w.R.circle = function (x, y, rad, lw, r, g, b, a) {
+			if (a === 0.85) cols.push(r.toFixed(4) + ',' + g.toFixed(4) + ',' + b.toFixed(4));
+			return real.apply(this, arguments);
+		};
+		w.tick(1, 32);
+		w.R.circle = real;
+		return cols.sort().join(' ');
+	}
+	w.tick(6, 32);
+	App.setCircleHueK(0);
+	// k = 0: hue 0 for every distance - the outlines all share one colour
+	var parts = snapshot().split(' ');
+	var uniq = {};
+	for (var i = 0; i < parts.length; i++) uniq[parts[i]] = 1;
+	var distinct = 0;
+	for (var c in uniq) distinct++;
+	ok(distinct === 1, 'k = 0 freezes the hue: one colour for every gear', snapshot());
+	// a bigger k re-maps the same distances to a different set of hues
+	App.setCircleHueK(1);
+	w.tick(2, 32);
+	var s1 = snapshot();
+	App.setCircleHueK(2);
+	ok(s1 !== snapshot(), 'k scales the mapping: k = 1 and k = 2 read different hues');
+	ok(Math.abs(App.allGears[2].distPrev - App.allGears[2].distPrev) < 1e-12,
+		'k leaves the measured distances alone (no scratch re-prime)');
+	// clamps + persistence
+	App.setCircleHueK(99);
+	ok(App.circleHueK === 8, 'k clamps to its upper bound', App.circleHueK);
+	App.setCircleHueK(-3);
+	ok(App.circleHueK === 0, 'k clamps to its lower bound', App.circleHueK);
+	ok(Settings.sanitizeApp({ circleHueK: 'x' }).circleHueK === 1, 'garbage k falls back to the default');
+	App.setCircleHueK(2);
+	var bag = Settings.snapshotApp(App);
+	ok(bag.circleHueK === 2, 'the app bag carries k');
+	var saved = Gear.serialize(App.roots, App.view, App.globalSpeed, App.colorMode, bag);
+	var w2 = boot({ settings: saved });
+	ok(w2.App.circleHueK === 2, 'a saved scene restores k');
+	// the panel slider drives it
+	var kRow = rowByLabel(w2.byId.panel, 'hue scale k');
+	ok(!!kRow, 'panel: the hue scale k slider exists');
+	ok(Number(kRow.input.value) === 2, 'the slider syncs to the loaded k', String(kRow.input.value));
+	kRow.input.value = 3;
+	kRow.input.dispatch('input');
+	ok(w2.App.circleHueK === 3, 'the slider drives App.setCircleHueK');
+	// reset restores the default
+	Settings.applyApp(Settings.defaultApp(), App, w.GUI);
+	ok(App.circleHueK === 1, 'restore-defaults brings k back to 1');
 	App.resetScene();
 })();
 

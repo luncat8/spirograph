@@ -28,7 +28,11 @@
 		// = the axis-off sentinel (the log sliders prepend it). the toggle
 		// (autoRotate) and the speeds all persist in the app bag.
 		autoYaw: { min: 0.01, max: 3, def: 0.2, floor: 0, float: true },
-		autoPitch: { min: 0.01, max: 3, def: 0, floor: 0, float: true }
+		autoPitch: { min: 0.01, max: 3, def: 0, floor: 0, float: true },
+		// guide-circle hue scale: how strong a change of distance / speed
+		// reads in hue cycles. 1 = the stock mapping (HUE_DIST_TURNS /
+		// HUE_RATE_TURNS), 0 freezes the hue.
+		circleHueK: { min: 0, max: 8, step: 0.1, def: 1, float: true }
 	};
 
 	// round + clamp a user/loaded value for a bounded field.
@@ -246,6 +250,19 @@
 			get: function (A) { return A.circleHueTarget; },
 			clean: function (v) { return CIRCLE_HUE_TARGETS[v] ? v : undefined; },
 			apply: function (s, A, GUI) { A.setCircleHueTarget(s.circleHueTarget); GUI.setCircleHueTarget(s.circleHueTarget); }
+		},
+		{
+			// hue scale (see LIMITS.circleHueK): multiplies the distance /
+			// speed -> hue mapping, for BOTH hue sources. a pure repaint -
+			// no scratch to re-prime (the distances and rates are the raw
+			// measurements, k only scales how they read as colour).
+			key: 'circleHueK', def: LIMITS.circleHueK.def, persist: true,
+			get: function (A) { return A.circleHueK; },
+			clean: function (v) {
+				if (typeof v !== 'number' || !isFinite(v)) return undefined;
+				return clamp('circleHueK', v);
+			},
+			apply: function (s, A, GUI) { A.circleHueK = s.circleHueK; GUI.setCircleHueK(s.circleHueK); A.markDirty(); }
 		},
 		{
 			key: 'showDial', def: false, persist: true,

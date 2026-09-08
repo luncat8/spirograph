@@ -133,6 +133,10 @@
 	// 'black' (the default) draws nothing: the clear colour is the background.
 	var BG_THEMES = { checker: 0, rainbow: 1, colorbox: 2 };
 	var BG_GAIN = 0.75;              // trails sit on top: keep the env a step back
+	// background id -> env theme index. 'black' / unknown = 0 (the checker
+	// interior, which is what the reference hollow_bubbles runs in). the
+	// glass shaders reflect the env the canvas shows behind the figure.
+	function bgTheme(id) { var t = BG_THEMES[id]; return t == null ? 0 : t; }
 	var bgProg = null, bgVao = null, bgVbo = null, bgLoc = {};
 	var BG_VS = [
 		'#version 300 es',
@@ -140,6 +144,92 @@
 		'layout(location = 0) in vec2 aQ;',
 		'void main(){ gl_Position = vec4(aQ, 0.0, 1.0); }'
 	].join('\n');
+
+	// the analytic environment shared by the background pass and the glass
+	// sphere shaders - a faithful port of luncat8/glass-spheres-shader
+	// GLSL.env (js/glsl_lib.js, themes 0-2 + envSun). direction-only, exactly
+	// like a cubemap, so it can be sampled from anywhere; the sun rides on top
+	// of the selected theme (a tight disc plus a broad glow, so reflections
+	// sparkle). both consumers define PI, uTime and uTheme before splicing
+	// this in.
+	var GLSL_ENV = [
+		// up + toward the viewer, mirrored from the reference's
+		// (0.35, 0.62, -0.70): its camera looks from -z, ours looks from +z
+		// (2D window) / +y (3D face-on), so the z sign flips.
+		'#define SUN_DIR normalize(vec3(0.35, 0.62, 0.70))',
+		'',
+		'float saturate1(float x){ return clamp(x, 0.0, 1.0); }',
+		'',
+		// smooth analytic 3D wobble in [-1,1]: no texture, no hash, no grain.
+		// used for soap-film thickness swirls and for soft cloud banding.
+		'float swirl(vec3 p){',
+		'  float a = sin(p.x * 1.7 + sin(p.z * 1.3) * 1.2);',
+		'  float b = cos(p.y * 1.9 - sin(p.x * 1.1) * 0.9);',
+		'  float c = sin(p.z * 1.4 + cos(p.y * 1.6) * 1.1);',
+		'  return (a * b + c) * 0.5;',
+		'}',
+		'vec3 hsv2rgb(vec3 c){',
+		'  vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);',
+		'  vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);',
+		'  return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);',
+		'}',
+		// theme 0: sky gradient + a checkered ground plane at y = -3, fading
+		// into the horizon haze (the hollow_bubbles interior, unchanged).
+		'vec3 envChecker(vec3 d){',
+		'  d = normalize(d);',
+		'  if (d.y < -0.02) {',
+		'    float t = -3.0 / d.y;',
+		'    vec2 q = d.xz * t;',
+		'    float chk = mod(floor(q.x * 0.35) + floor(q.y * 0.35), 2.0);',
+		'    vec3 floorCol = mix(vec3(0.06, 0.07, 0.09), vec3(0.80, 0.78, 0.74), chk);',
+		'    float fog = exp(-t * 0.022);',
+		'    return mix(vec3(0.58, 0.66, 0.78), floorCol, fog);',
+		'  }',
+		'  float h = saturate1(d.y);',
+		'  vec3 sky = mix(vec3(0.70, 0.78, 0.90), vec3(0.10, 0.26, 0.60), pow(h, 0.6));',
+		'  sky += vec3(0.45, 0.28, 0.15) * pow(1.0 - h, 10.0) * 0.7;',
+		// soft cloud banding so reflections and refractions carry structure
+		'  float cl = saturate1(0.5 + 0.5 * swirl(d * 4.5 + vec3(0.0, 1.7, 0.0)));',
+		'  sky = mix(sky, vec3(0.92, 0.94, 0.98), cl * cl * 0.35 * saturate1(d.y * 3.0));',
+		'  return sky;',
+		'}',
+		// theme 1: the hue rides the azimuth, with soft cellular blobs and
+		// bright bubble-like highlights on top.
+		'vec3 envRainbow(vec3 d){',
+		'  d = normalize(d);',
+		'  float hue = fract(atan(d.z, d.x) / (2.0 * PI) + 0.5 * d.y + uTime * 0.02);',
+		'  vec3 col = hsv2rgb(vec3(hue, 0.60, 0.50 + 0.30 * saturate1(d.y)));',
+		'  float c1 = 0.5 + 0.5 * swirl(d * 3.0 + vec3(0.0, uTime * 0.04, 1.7));',
+		'  float c2 = 0.5 + 0.5 * swirl(d * 6.5 - vec3(uTime * 0.03, 0.8, 0.0));',
+		'  vec3 top = 0.5 + 0.5 * cos(2.0 * PI * (hue + vec3(0.0, 0.33, 0.67)));',
+		'  col = mix(col, top * 1.25, 0.30 * c1);',
+		'  col += vec3(1.0) * pow(c2, 6.0) * 0.12;',
+		'  return col;',
+		'}',
+		// theme 2: fbm-hued colour all around the camera.
+		'vec3 envColorBox(vec3 d){',
+		'  d = normalize(d);',
+		'  vec3 p = d * 2.4 + vec3(uTime * 0.05, uTime * 0.03, 0.0);',
+		'  float n = swirl(p * 1.6)',
+		'    + 0.5 * swirl(p * 3.1 + vec3(4.7, 2.9, 1.3))',
+		'    + 0.25 * swirl(p * 6.3 - vec3(1.9, 5.1, 3.7));',
+		'  n = n * 0.57 + 0.5;',
+		'  vec3 col = hsv2rgb(vec3(fract(n * 1.4), 0.85, 0.92));',
+		'  col *= 0.80 + 0.20 * saturate1(d.y * 0.5 + 0.5);',
+		'  return col;',
+		'}',
+		'vec3 env(vec3 d){',
+		'  if (uTheme == 2) return envColorBox(d);',
+		'  if (uTheme == 1) return envRainbow(d);',
+		'  return envChecker(d);',
+		'}',
+		'vec3 envSun(vec3 d){',
+		'  d = normalize(d);',
+		'  float s = saturate1(dot(d, SUN_DIR));',
+		'  return env(d) + vec3(1.25, 1.10, 0.90) * (pow(s, 3000.0) * 14.0 + pow(s, 20.0) * 0.30);',
+		'}'
+	].join('\n');
+
 	var BG_FS = [
 		'#version 300 es',
 		'precision highp float;',
@@ -153,66 +243,7 @@
 		'uniform int uTheme;',
 		'out vec4 outColor;',
 		'#define PI 3.14159265359',
-		'float sat1(float x){ return clamp(x, 0.0, 1.0); }',
-		// smooth analytic 3D wobble in [-1,1]: no texture, no hash, no grain.
-		'float swirl(vec3 p){',
-		'  float a = sin(p.x * 1.7 + sin(p.z * 1.3) * 1.2);',
-		'  float b = cos(p.y * 1.9 - sin(p.x * 1.1) * 0.9);',
-		'  float c = sin(p.z * 1.4 + cos(p.y * 1.6) * 1.1);',
-		'  return (a * b + c) * 0.5;',
-		'}',
-		'vec3 hsv2rgb(vec3 c){',
-		'  vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);',
-		'  vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);',
-		'  return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);',
-		'}',
-		// sky gradient + a checkered ground plane at y = -3, fading into haze.
-		'vec3 envChecker(vec3 d){',
-		'  d = normalize(d);',
-		'  if (d.y < -0.02) {',
-		'    float t = -3.0 / d.y;',
-		'    vec2 q = d.xz * t;',
-		'    float chk = mod(floor(q.x * 0.35) + floor(q.y * 0.35), 2.0);',
-		'    vec3 floorCol = mix(vec3(0.06, 0.07, 0.09), vec3(0.80, 0.78, 0.74), chk);',
-		'    float fog = exp(-t * 0.022);',
-		'    return mix(vec3(0.58, 0.66, 0.78), floorCol, fog);',
-		'  }',
-		'  float h = sat1(d.y);',
-		'  vec3 sky = mix(vec3(0.70, 0.78, 0.90), vec3(0.10, 0.26, 0.60), pow(h, 0.6));',
-		'  sky += vec3(0.45, 0.28, 0.15) * pow(1.0 - h, 10.0) * 0.7;',
-		'  float cl = sat1(0.5 + 0.5 * swirl(d * 4.5 + vec3(0.0, 1.7, 0.0)));',
-		'  sky = mix(sky, vec3(0.92, 0.94, 0.98), cl * cl * 0.35 * sat1(d.y * 3.0));',
-		'  return sky;',
-		'}',
-		// the hue rides the azimuth, with soft cellular blobs on top.
-		'vec3 envRainbow(vec3 d){',
-		'  d = normalize(d);',
-		'  float hue = fract(atan(d.z, d.x) / (2.0 * PI) + 0.5 * d.y + uTime * 0.02);',
-		'  vec3 col = hsv2rgb(vec3(hue, 0.60, 0.50 + 0.30 * sat1(d.y)));',
-		'  float c1 = 0.5 + 0.5 * swirl(d * 3.0 + vec3(0.0, uTime * 0.04, 1.7));',
-		'  float c2 = 0.5 + 0.5 * swirl(d * 6.5 - vec3(uTime * 0.03, 0.8, 0.0));',
-		'  vec3 top = 0.5 + 0.5 * cos(2.0 * PI * (hue + vec3(0.0, 0.33, 0.67)));',
-		'  col = mix(col, top * 1.25, 0.30 * c1);',
-		'  col += vec3(1.0) * pow(c2, 6.0) * 0.12;',
-		'  return col;',
-		'}',
-		// fbm-hued colour all around the camera.
-		'vec3 envColorBox(vec3 d){',
-		'  d = normalize(d);',
-		'  vec3 p = d * 2.4 + vec3(uTime * 0.05, uTime * 0.03, 0.0);',
-		'  float n = swirl(p * 1.6)',
-		'    + 0.5 * swirl(p * 3.1 + vec3(4.7, 2.9, 1.3))',
-		'    + 0.25 * swirl(p * 6.3 - vec3(1.9, 5.1, 3.7));',
-		'  n = n * 0.57 + 0.5;',
-		'  vec3 col = hsv2rgb(vec3(fract(n * 1.4), 0.85, 0.92));',
-		'  col *= 0.80 + 0.20 * sat1(d.y * 0.5 + 0.5);',
-		'  return col;',
-		'}',
-		'vec3 env(vec3 d){',
-		'  if (uTheme == 2) return envColorBox(d);',
-		'  if (uTheme == 1) return envRainbow(d);',
-		'  return envChecker(d);',
-		'}',
+		GLSL_ENV,
 		'void main(){',
 		'  vec2 ndc = (gl_FragCoord.xy / uRes) * 2.0 - 1.0;',
 		'  vec3 d = uPersp > 0.5',
@@ -274,9 +305,14 @@
 	// of luncat8/glass-spheres-shader, spheres only):
 	//   hollow : membrane tracing. the ray is walked event by event through up
 	//            to uLayers thin shells (outer + inner surface), refracting
-	//            through each wall with Fresnel, Beer-Lambert tint and a
-	//            thin-film iridescence, with chromatic dispersion at the tail.
-	//   layers : nearest-three-layers glass, composited back to front.
+	//            through each wall with Fresnel, the reference per-bubble
+	//            Beer-Lambert tint and a thin-film iridescence, with chromatic
+	//            dispersion at the tail. the same sliders as the reference
+	//            shader drive the same numbers: the membrane math, the tint,
+	//            the film and the reflections are the reference formulas, so
+	//            the same GUI settings read as the same picture.
+	//   layers : nearest-three-layers glass, composited back to front, in the
+	//            user-picked sphere tint.
 	// what lies behind the glass is a framebuffer copy (sphGrab) sampled along
 	// the bent tail ray (shift capped to a few px: hairline trails moire when
 	// the refracted read jumps across strands). depth order is exact in the
@@ -297,8 +333,11 @@
 		'void main(){ gl_Position = vec4(aQ, 0.0, 1.0); }'
 	].join('\n');
 
-	// shared prelude: camera rays, view-space studio environment, background
-	// sampling through the framebuffer copy, Fresnel, thin film.
+	// shared prelude: camera rays, the reference environment, background
+	// sampling through the framebuffer copy, Fresnel, thin film. the env is
+	// the reference luncat8/glass-spheres-shader environment sampled in WORLD
+	// space (see GLSL_ENV), not a view-space studio sky - the shells reflect
+	// exactly what the reference shader reflects, in 2D and 3D alike.
 	var SPH_COMMON = [
 		'#version 300 es',
 		'precision highp float;',
@@ -317,7 +356,7 @@
 		'uniform float uMaxShift;', // refraction sample shift cap, px
 		'uniform vec4 uBubbles[MAXB];',
 		'uniform int uCount;',
-		'uniform vec3 uTint;',      // glass colour (transmitted)
+		'uniform vec3 uTint;',      // layered-glass colour (transmitted)
 		'uniform float uWall;',
 		'uniform float uIor;',
 		'uniform float uDensity;',
@@ -325,14 +364,17 @@
 		'uniform float uDisp;',
 		'uniform float uLayers;',
 		'uniform float uTime;',
+		'uniform int uTheme;',      // env theme (GLSL_ENV), follows the background select
 		'out vec4 outColor;',
 		'',
-		'float saturate1(float x){ return clamp(x, 0.0, 1.0); }',
+		GLSL_ENV,
 		'float fresnel(float c, float f0){ return f0 + (1.0 - f0) * pow(saturate1(1.0 - c), 5.0); }',
+		// filmic tonemap + gamma, exactly like the reference: keeps the env
+		// highlights from clipping flat.
 		'vec3 tonemap(vec3 c){',
 		'  c = max(c, vec3(0.0));',
 		'  c = (c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14);',
-		'  return clamp(c, vec3(0.0), vec3(1.0));',
+		'  return pow(clamp(c, vec3(0.0), vec3(1.0)), vec3(1.0 / 2.2));',
 		'}',
 		'vec2 ray_sphere(vec3 ro, vec3 rd, vec3 c, float r){',
 		'  vec3 oc = ro - c;',
@@ -343,12 +385,6 @@
 		'  h = sqrt(h);',
 		'  return vec2(-b - h, -b + h);',
 		'}',
-		'float swirl(vec3 p){',
-		'  float a = sin(p.x * 1.7 + sin(p.z * 1.3) * 1.2);',
-		'  float b = cos(p.y * 1.9 - sin(p.x * 1.1) * 0.9);',
-		'  float c = sin(p.z * 1.4 + cos(p.y * 1.6) * 1.1);',
-		'  return (a * b + c) * 0.5;',
-		'}',
 		'vec3 filmTint(float d){',
 		'  return 0.5 + 0.5 * cos(2.0 * PI * (d * vec3(1.0, 0.82, 0.66) + vec3(0.0, 0.28, 0.55)));',
 		'}',
@@ -356,6 +392,17 @@
 		'  float h = fract(i * 0.6180339887);',
 		'  return 0.5 + 0.5 * cos(2.0 * PI * (h + vec3(0.0, 0.33, 0.67)));',
 		'}',
+		// the reference per-bubble absorption palette (hollow_bubbles.js
+		// tintOf): hue spread over the golden ratio so overlapping bubbles
+		// stay readable. hollow bubbles absorb by EXACTLY this - no user tint.
+		'vec3 tintOf(float i){',
+		'  float h = fract(i * 0.6180339887);',
+		'  vec3 c = 0.5 + 0.5 * cos(2.0 * PI * (h + vec3(0.0, 0.33, 0.67)));',
+		'  return mix(vec3(0.45), vec3(1.0) - c, 0.55);',
+		'}',
+		// layered-glass colour: the user tint, nudged per sphere around the
+		// hue wheel (the only place the user tint applies).
+		'vec3 sphereTint(float i){ return mix(uTint, hueTint(i), 0.3); }',
 		// camera ray for a pixel (gl_FragCoord, bottom-left origin)
 		'void camera(vec2 fc, out vec3 ro, out vec3 rd){',
 		'  vec2 ndc = fc / uRes * 2.0 - 1.0;',
@@ -387,34 +434,7 @@
 		'  float l = length(shift);',
 		'  if (l > uMaxShift) shift *= uMaxShift / l;',
 		'  return texture(uTex, uv0 + shift / uRes).rgb;',
-		'}',
-		// environment in VIEW space (x right, y up, z toward the eye): a soft
-		// pastel sky (bright above, dusk below - the reference shaders reflect
-		// a daylight sky, which is what makes the rims read) with cloud
-		// banding, plus a key light and a cool fill so the shells stay legible
-		// against the dark canvas.
-		'vec3 envView(vec3 d){',
-		'  float h = saturate1(d.y * 0.5 + 0.5);',
-		'  vec3 col = mix(vec3(0.16, 0.13, 0.20), vec3(0.62, 0.72, 0.88), pow(h, 0.7));',
-		'  col += vec3(0.45, 0.28, 0.15) * pow(1.0 - h, 6.0) * 0.5;',
-		'  float cl = saturate1(0.5 + 0.5 * swirl(d * 4.5 + vec3(0.0, 1.7, 0.0)));',
-		'  col = mix(col, vec3(0.92, 0.94, 0.98), cl * cl * 0.35 * h);',
-		'  vec3 l1 = normalize(vec3(0.55, 0.55, 0.65));',
-		'  vec3 l2 = normalize(vec3(-0.50, -0.25, 0.80));',
-		'  col += vec3(1.25, 1.10, 0.90) * (pow(max(dot(d, l1), 0.0), 3000.0) * 14.0 + pow(max(dot(d, l1), 0.0), 20.0) * 0.30);',
-		'  col += vec3(0.42, 0.58, 0.98) * pow(max(dot(d, l2), 0.0), 26.0) * 0.35;',
-		'  return col;',
-		'}',
-		'vec3 envSun(vec3 dw){',
-		'  vec3 d = normalize(vec3(dot(dw, uCamRt), dot(dw, uCamUp), -dot(dw, uCamFw)));',
-		'  return envView(d);',
-		'}',
-		// per-sphere absorption: the user tint, nudged per sphere around the hue wheel
-		'vec3 absorbOf(float i){',
-		'  vec3 base = vec3(1.0) - uTint;',
-		'  return mix(base, vec3(1.0) - hueTint(i), 0.3);',
-		'}',
-		'vec3 sphereTint(float i){ return mix(uTint, hueTint(i), 0.3); }'
+		'}'
 	].join('\n');
 
 	// ---- shader 1: hollow glass bubbles (membrane tracing) -----------------
@@ -472,7 +492,11 @@
 		'    vec2 hout = sphereHit(q, rd1, sp, n1, n2);',
 		'    chord = max(hout.y, 0.0); pB = q + rd1 * chord; nB = -n2;',
 		'  }',
-		'  tp *= exp(-absorbOf(idx) * uDensity * chord / max(uWall * R, 1e-4) * 0.16);',
+		// Beer-Lambert over the glass actually travelled, with the reference
+		// per-bubble palette: absorption depends on the PATH, never on the
+		// wall fraction (a thicker wall only lengthens the chord, exactly
+		// like the reference shader).
+		'  tp *= exp(-tintOf(idx) * uDensity * chord * 3.5);',
 		'  float F2 = fresnel(saturate1(dot(-rd1, nB)), f0);',
 		'  col += tp * F2 * envSun(reflect(rd1, nB)) * film * 0.85;',
 		'  tp *= (1.0 - F2);',
@@ -608,7 +632,7 @@
 	var SPH_SOURCES = { hollow: SPH_FS_HOLLOW, layers: SPH_FS_LAYERS };
 	var SPH_UNIFORMS = ['uRes', 'uTex', 'uCamPos', 'uCamRt', 'uCamUp', 'uCamFw', 'uFocal', 'uOrtho',
 		'uBgDist', 'uMaxShift', 'uBubbles[0]', 'uCount', 'uTint', 'uWall', 'uIor', 'uDensity',
-		'uIrid', 'uDisp', 'uLayers', 'uTime'];
+		'uIrid', 'uDisp', 'uLayers', 'uTime', 'uTheme'];
 
 	// programs compile lazily on first use (each is a full ray tracer; only
 	// the selected one is ever needed).
@@ -679,7 +703,7 @@
 
 	// p: { shader, camPos, camRt, camUp, camFw (vec3 arrays), focal, ortho,
 	//      bgDist, maxShift, tint (vec3), wall, ior, density, irid, disp,
-	//      layers, time }
+	//      layers, time, theme }
 	function sphDraw(p) {
 		if (sphCount === 0) return;
 		var e = sphProgram(p.shader);
@@ -707,6 +731,7 @@
 		gl.uniform1f(L.uDisp, p.disp);
 		gl.uniform1f(L.uLayers, p.layers);
 		gl.uniform1f(L.uTime, p.time);
+		gl.uniform1i(L.uTheme, p.theme);
 		gl.activeTexture(gl.TEXTURE0);
 		gl.bindTexture(gl.TEXTURE_2D, sphTex);
 		gl.uniform1i(L.uTex, 0);
@@ -1038,6 +1063,7 @@
 		glowBegin: glowBegin,
 		glowPoint: glowPoint,
 		glowFlush: glowFlush,
+		bgTheme: bgTheme,
 		bgDraw: bgDraw,
 		sphReset: sphReset,
 		sphPush: sphPush,

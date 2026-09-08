@@ -26,6 +26,7 @@
 	var selectRefs = {};   // dit for <select> inputs (glass shader)
 	var sphereHost = null; // glass shader slider rows host
 	var sphereRows = {};   // param key -> slider row of the selected shader
+	var tintRow = null;    // sphere tint colour row (layered glass only)
 	var presetHost = null; // preset dropdown host (scene section), rebuilt in place
 	// reference into the open per-gear menu so refreshAnimMode() can relabel the
 	// anim-speed slider prefix after the global color mode changes.
@@ -254,6 +255,9 @@
 			sphereRows[k] = row;
 			sphereHost.appendChild(row);
 		});
+		// hollow bubbles follow the reference shader exactly, automatic
+		// per-gear tints included - the user tint row belongs to layered glass.
+		if (tintRow) tintRow.style.display = id === 'layers' ? '' : 'none';
 	}
 
 	function colorCheckRow(label, checkVal, colorVal, onCheck, onColor) {
@@ -426,11 +430,16 @@
 		gView.appendChild(selectRow('hue anchor', Settings.CIRCLE_HUE_TARGET_IDS, function (id) {
 			return Settings.CIRCLE_HUE_TARGETS[id].label;
 		}, app.circleHueTarget, function (v) { app.setCircleHueTarget(v); }, 'circleHueTarget'));
+		var hueKL = Settings.LIMITS.circleHueK;
+		gView.appendChild(sliderRow('hue scale k', hueKL.min, hueKL.max, hueKL.step, app.circleHueK, function (v) {
+			app.setCircleHueK(v);
+		}, null, 'circleHueK'));
 		gView.appendChild(el('div', 'help',
 			'rides the colour of the circle outlines on how far a gear centre is from ' +
 			'the anchor centre (distance), or on how fast that distance changes (speed). ' +
 			'a gear is mounted rigidly on its parent, so the PARENT anchor is a constant ' +
-			'tint per gear - pick the parent\'s parent or the root centre to watch it move.'));
+			'tint per gear - pick the parent\'s parent or the root centre to watch it move. ' +
+			'k scales both: 1 is the stock mapping, 0 freezes the hue.'));
 		gView.appendChild(checkboxRow('dial', app.showDial, function (v) { app.setShowDial(v); }, 'showDial'));
 		gView.appendChild(checkboxRow('draw trail', app.drawTrails, function (v) { app.setDrawTrails(v); }, 'drawTrails'));
 		gView.appendChild(checkboxRow('bake full figure (overlay)', app.overlay.on, function (v) {
@@ -460,14 +469,16 @@
 		gSphere.appendChild(selectRow('glass shader', Settings.SPHERE_SHADER_IDS, function (id) {
 			return Settings.SPHERE_SHADERS[id].label;
 		}, app.sphereShader, function (v) { app.setSphereShader(v); rebuildSphereRows(); }, 'sphereShader'));
-		gSphere.appendChild(colorRow('sphere tint', app.sphereColor, function (v) { app.setSphereColor(v); }, 'sphereColor'));
+		tintRow = colorRow('sphere tint', app.sphereColor, function (v) { app.setSphereColor(v); }, 'sphereColor');
+		gSphere.appendChild(tintRow);
 		sphereHost = el('div', 'levels');
 		gSphere.appendChild(sphereHost);
 		rebuildSphereRows();
 		gSphere.appendChild(el('div', 'help',
 			'Ray-traced glass shells on every gear. hollow bubbles: membrane wall, ' +
-			'iridescence, dispersion, see-through depth (layers). layered glass: ' +
-			'nearest three shells composited.'));
+			'iridescence, dispersion, see-through depth (layers), with the automatic ' +
+			'golden-ratio tint of the reference shader per gear. layered glass: ' +
+			'nearest three shells composited, in the picked sphere tint.'));
 
 		// gear tree: level sliders grow every parent at a depth by the same
 		// child count, radially spaced; symmetry mirrors menu edits per level.
@@ -493,8 +504,9 @@
 		gTree.appendChild(treeHost);
 		gTree.appendChild(el('div', 'help',
 			'lvl N = children per parent at that level, placed at i * 360/N. 0 removes the level. ' +
-			'The list is the whole tree: click a row to open that gear\'s menu, and a gear ' +
-			'picked on the canvas lights its row up.'));
+			'The list is the whole tree, nested by parent: click a row to open that gear\'s menu, ' +
+			'and a gear picked on the canvas lights its row up. symmetry collapses it to one row ' +
+			'per level (× N = the rosette size).'));
 
 		helpLine = el('div', 'help',
 			'space pause - wheel zoom - drag pan - click gear to edit - rmb browser menu - Esc close');
@@ -506,12 +518,14 @@
 		rebuildLevels();
 	}
 
-	// ---- gear tree: one row per gear, grouped by level ---------------------
+	// ---- gear tree: one row per gear, nested by parent ----------------------
 	// the level sliders set the SHAPE of a level; the tree names the gears in
 	// it, so a dot deep in a rosette is opened from the list instead of hunted
-	// on the canvas. rebuildLevels() owns the refresh (every structural change
-	// runs through it) and openMenu/closeMenu own the highlight - which is also
-	// how a canvas pick reaches the tree.
+	// on the canvas. each row nests its own children under it (depth-first,
+	// indented), so the list reads as the parent-child structure instead of a
+	// flat per-level table. rebuildLevels() owns the refresh (every structural
+	// change runs through it) and openMenu/closeMenu own the highlight - which
+	// is also how a canvas pick reaches the tree.
 	var SCROLL_NEAR = { block: 'nearest' };    // shared: never allocate per call
 
 	function idxInTree(g) {
@@ -527,10 +541,13 @@
 	}
 
 	// the two numbers a gear is actually recognised by (tilt shows up only
-	// when a 3D scene really has one).
+	// when a 3D scene really has one). under symmetry the list shows one row
+	// per level and that row stands for the whole rosette, marked × N.
 	function gearInfo(g) {
 		var s = 'd ' + fmt(g.r * 2) + '  v ' + fmt(g.speed);
 		if (g.speed2) s += '  t ' + fmt(g.speed2);
+		if (app.symmetry && g.parent && g.parent.children.length > 1)
+			s += '  ×' + g.parent.children.length;
 		return s;
 	}
 
@@ -564,22 +581,19 @@
 		return node;
 	}
 
+	// one branch: the gear, then its children nested under it. under symmetry
+	// every sibling is a clone of the first, so only that one gets a row.
+	function buildBranch(host, g, depth) {
+		host.appendChild(makeTreeNode(g, depth));
+		var n = app.symmetry ? Math.min(g.children.length, 1) : g.children.length;
+		for (var i = 0; i < n; i++) buildBranch(host, g.children[i], depth + 1);
+	}
+
 	function buildGearTree() {
 		if (!treeHost) return;
 		treeHost.innerHTML = '';
 		treeRows.length = 0;
-		var level = app.roots, depth = 0;
-		while (level.length) {
-			treeHost.appendChild(el('div', 'tlev',
-				(depth ? 'lvl ' + depth : 'main gears') + ' - ' + level.length));
-			var next = [];
-			for (var i = 0; i < level.length; i++) {
-				treeHost.appendChild(makeTreeNode(level[i], depth));
-				for (var c = 0; c < level[i].children.length; c++) next.push(level[i].children[c]);
-			}
-			level = next;
-			depth++;
-		}
+		for (var r = 0; r < app.roots.length; r++) buildBranch(treeHost, app.roots[r], 0);
 		highlightTree();
 	}
 
@@ -867,6 +881,7 @@
 		setShowAxis: function (v) { if (checkboxRefs.showAxis) checkboxRefs.showAxis.checked = v; },
 		setCircleHue: function (v) { if (selectRefs.circleHue) selectRefs.circleHue.value = v; },
 		setCircleHueTarget: function (v) { if (selectRefs.circleHueTarget) selectRefs.circleHueTarget.value = v; },
+		setCircleHueK: function (v) { syncSlider('circleHueK', v); },
 		setBackground: function (v) { if (selectRefs.background) selectRefs.background.value = v; },
 		setDrawTrails: function (v) { if (checkboxRefs.drawTrails) checkboxRefs.drawTrails.checked = v; },
 		setSphereShader: function (v) {

@@ -52,10 +52,8 @@
 	.group > :not(.gh) { margin: 0; padding: 3px 8px; }
 	.group > :not(.gh):nth-child(even) { background: #17202f; }
 	.group > :last-child { padding-bottom: 6px; }
-	/* gear tree: one row per gear, grouped by level, click opens its menu */
+	/* gear tree: one row per gear, nested by parent, click opens its menu */
 	.group > .tree { max-height: 30vh; overflow-y: auto; padding: 2px 0 4px; }
-	.tlev { padding: 3px 8px; color: #6b7896; font-size: 10px;
-		text-transform: uppercase; letter-spacing: .05em; }
 	.tnode { display: flex; align-items: center; gap: 5px; padding: 2px 8px;
 		cursor: pointer; color: #9fb0c8; }
 	.tnode:hover { background: #24314a; }
